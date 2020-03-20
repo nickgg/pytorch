@@ -7,6 +7,7 @@
 #include <torch/csrc/jit/serialization/import_export_helpers.h>
 #include <torch/csrc/jit/passes/dead_code_elimination.h>
 #include <torch/csrc/jit/runtime/instruction.h>
+#include <torch/csrc/jit/passes/inliner.h>
 
 #include <onnx/checker.h>
 #include <onnx/onnx_pb.h>
@@ -915,29 +916,33 @@ void check_onnx_proto(const std::string& proto_string) {
     onnx::checker::check_model(model);
 }
 
+void moduleMethodsTuple(
+    const Module& module,
+    std::vector<c10::IValue>& elements);
+IValue expect_field(IValue tup, const std::string& expected_name, size_t entry);
+
 namespace {
-void export_opnames(const Module& m, std::set<std::string>& opnames) {
-  for (const auto& method : m.get_methods()) {
-    const auto& func = method.function();
-    for (const auto& node : func.graph()->nodes()) {
-      auto schema = node->maybeSchema();
-      if (schema) {
-        auto opname = schema->operator_name();
-        std::string namestr = opname.name;
-        if (!opname.overload_name.empty()) {
-          namestr += "." + opname.overload_name;
-        }
-        opnames.emplace(namestr);
-      }
+void export_opnames(const script::Module& m, std::set<std::string>& opnames) {
+  std::vector<c10::IValue> elements;
+  moduleMethodsTuple(m, elements);
+  for (const auto& element : elements) {
+    auto table = element.toTuple()->elements()[1];
+    const auto& ops_list =
+        expect_field(table, "operators", 1).toTuple()->elements();
+    for (const auto& op : ops_list) {
+      auto op_item = op.toTuple()->elements();
+      TORCH_CHECK(
+          op_item.size() == 2,
+          "There should be two parts in an operator name.");
+      opnames.emplace(
+          op_item[0].toString()->string() + "," +
+          op_item[1].toString()->string());
     }
-  }
-  for (const auto& sub_m : m.children()) {
-    export_opnames(sub_m, opnames);
   }
 }
 } // namespace
 
-std::vector<std::string> export_opnames(const Module& m) {
+std::vector<std::string> export_opnames(const script::Module& m) {
   std::set<std::string> names;
   export_opnames(m, names);
   return std::vector<std::string>(names.begin(), names.end());
