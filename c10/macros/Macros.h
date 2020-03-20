@@ -23,6 +23,18 @@
 
 #include "c10/macros/Export.h"
 
+/**
+ * C10_IGNORE_FLOAT_CAST_OVERFLOW specifies a function which deliberately
+ * casts floating values to integer types without verifying the values fall
+ * within the integer type's dynamic range.
+ */
+
+#if defined(__clang__)
+  #define C10_IGNORE_FLOAT_CAST_OVERFLOW __attribute__((no_sanitize("float-cast-overflow")))
+#else
+  #define C10_IGNORE_FLOAT_CAST_OVERFLOW
+#endif
+
 // Disable the copy and assignment operator for a class. Note that this will
 // disable the usage of the class in std containers.
 #define C10_DISABLE_COPY_AND_ASSIGN(classname) \
