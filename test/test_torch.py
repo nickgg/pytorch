@@ -15130,6 +15130,17 @@ scipy_lobpcg  | {:10.2e}  | {:10.2e}  | {:6} | N/A
         # verifies out dtype overrides inference
         self.assertEqual(torch.full(o.shape, 1., out=o).dtype, o.dtype)
 
+    # Checks that float->integer casts don't produce undefined behavior errors
+    # Note: in CPP, casting from a floating point value to an integral dtype
+    # is undefined if the floating point value is not within the integral
+    # dtype's range. This can (and should) cause undefined behavior errors
+    # with ASAN/UBSAN. This behavior is expected in PyTorch, however,
+    # and is acceptable even if undefined.
+    @dtypes(torch.bool, torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64)
+    def test_float_to_int_undefined_conversion(self, device, dtype):
+        t = torch.tensor((-9.2234e+18, 9.2234e+18), dtype=torch.float)
+        self.assertEqual(t.to(dtype).dtype, dtype)
+
 
 # NOTE [Linspace+Logspace precision override]
 # Our Linspace and logspace torch.half CUDA kernels are not very precise.
