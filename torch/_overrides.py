@@ -128,6 +128,7 @@ def get_ignored_functions():
         torch.nn.functional.sigmoid,
         torch.nn.functional.hardsigmoid,
         torch.nn.functional.tanh,
+        torch.nn.functional.hardswish,
     )
 
 def get_testing_overrides():
