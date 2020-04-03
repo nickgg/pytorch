@@ -3,8 +3,10 @@
 #include <torch/csrc/WindowsTorchApiMacro.h>
 #include <vector>
 
+#include <torch/csrc/jit/tensorexpr/dim_arg.h>
 #include <torch/csrc/jit/tensorexpr/expr.h>
 #include <torch/csrc/jit/tensorexpr/function.h>
+#include <torch/csrc/jit/tensorexpr/reduction.h>
 
 namespace torch {
 namespace jit {
@@ -61,30 +63,6 @@ class Tensor {
   int output_index_;
 };
 
-// A helper structure to store the arguments to specify dimensions. In the
-// Compute arugments for dim_args, all of the following is supported. For
-// example:
-//    dim_args: {1, 2, 3, 4}
-//    dim_args: {{1, "x"}, {2, "y"}, {3, "z"}}
-//    dim_args: {1, 2, {3, "x"}}
-class DimArg {
- public:
-  // Intentionally leave out explicit to allow implicit conversions.
-  DimArg(const ExprHandle& dim) : dim_(dim) {}
-  DimArg(const ExprHandle& dim, const std::string& name_hint)
-      : dim_(dim), name_hint_(name_hint) {}
-  const ExprHandle& dim() const {
-    return dim_;
-  }
-  const std::string& name_hint() const {
-    return name_hint_;
-  }
-
- private:
-  ExprHandle dim_;
-  std::string name_hint_;
-};
-
 TORCH_API Tensor* Compute(
     const std::string& func_name,
     const std::vector<DimArg>& dim_args,
@@ -112,6 +90,12 @@ TORCH_API Tensor* Compute(
     const std::string& func_name,
     const std::vector<DimArg>& dim_args,
     const std::function<ExprHandle(const std::vector<VarHandle>&)>& body_func);
+
+TORCH_API Tensor* Reduce(
+    const std::string& func_name,
+    const std::vector<DimArg>& dim_args,
+    const ReducePrototype& reduce_proto,
+    const std::vector<DimArg>& reduce_args);
 
 class FunctionCall : public CallNode<FunctionCall> {
  public:

@@ -3,6 +3,7 @@
 #include <torch/csrc/jit/tensorexpr/eval.h>
 #include <torch/csrc/jit/tensorexpr/ir.h>
 #include <torch/csrc/jit/tensorexpr/ir_simplifier.h>
+#include <torch/csrc/jit/tensorexpr/reduction.h>
 
 namespace torch {
 namespace jit {
@@ -267,6 +268,18 @@ const Expr* IRMutator::mutate(const Polynomial* v) {
 const Expr* IRMutator::mutate(const RoundOff* v) {
   return new RoundOff(
       v->lhs()->accept_mutator(this), v->rhs()->accept_mutator(this));
+}
+
+const Expr* IRMutator::mutate(const Reducer* v) {
+  auto accum = v->accumulator().node()->accept_mutator(this);
+  Stmt* init = v->initializer()->accept_mutator(this);
+  auto body = v->body().node()->accept_mutator(this);
+  return new Reducer(
+      ExprHandle(accum),
+      init,
+      ExprHandle(body),
+      v->interaction(),
+      v->reduce_args());
 }
 
 const Expr* IRMutator::mutate(const BaseCallNode* v) {

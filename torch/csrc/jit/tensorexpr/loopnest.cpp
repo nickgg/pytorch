@@ -58,6 +58,62 @@ class IndexFlattener : public IRMutator {
   }
 };
 
+class ReductionExpander : public IRMutator {
+ public:
+  Stmt* expand(Stmt* s) {
+    return s->accept_mutator(this);
+  }
+
+  Stmt* mutate(const For* v) override {
+    LoopOptions loop_options = v->loop_options();
+    Stmt* body_new = v->body()->accept_mutator(this);
+    Stmt* ret =
+        new For(v->var(), v->start(), v->stop(), body_new, loop_options);
+
+    for (size_t i = 0; i < initializers_.size();) {
+      std::vector<const Var*>& vars = initializers_[i].second;
+
+      auto end = std::remove(vars.begin(), vars.end(), v->var());
+      if (end == vars.end()) {
+        i++;
+        continue;
+      }
+
+      vars.erase(end);
+      if (vars.empty()) {
+        if (Block* b = dynamic_cast<Block*>(ret)) {
+          b->prepend_stmt(initializers_[i].first);
+        } else {
+          ret = new Block({initializers_[i].first, ret});
+        }
+        initializers_.erase(initializers_.begin() + i);
+        continue;
+      }
+
+      i++;
+    }
+    return ret;
+  }
+
+  const Expr* mutate(const Reducer* v) override {
+    std::vector<const Var*> reduce_vars;
+    reduce_vars.reserve(v->reduce_args().size());
+    for (auto& d : v->reduce_args()) {
+      reduce_vars.push_back(d);
+    }
+    initializers_.push_back(std::make_pair(v->initializer(), reduce_vars));
+    return v->complete().node();
+  }
+
+  const Expr* mutate(const Var* v) override {
+    return v;
+  }
+
+ private:
+  Function* function_;
+  std::vector<std::pair<Stmt*, std::vector<const Var*>>> initializers_;
+};
+
 class Vectorizer : public IRMutator {
  public:
   Stmt* vectorize(const For* v) {
@@ -681,18 +737,18 @@ Stmt* LoopNest::lowerToStmt(Tensor* t) {
   stmt_to_tensor_[body] = t;
   tensor_to_stmt_[t] = body;
 
-  if (t->buf()->ndim() == 0) {
+  if (f->ndim() == 0) {
     return body;
   }
 
-  if (t->buf()->ndim() == 0) {
+  if (f->ndim() == 0) {
     throw malformed_input();
   }
 
-  for (size_t i = 0; i < t->buf()->ndim(); i++) {
+  for (size_t i = 0; i < f->ndim(); i++) {
     // Going in reverse order: from innermost loop to the outermost
-    size_t dim_index = t->buf()->ndim() - i - 1;
-    Range r(new IntImm(0), t->buf()->dim(dim_index));
+    size_t dim_index = f->ndim() - i - 1;
+    Range r(new IntImm(0), f->dim(dim_index));
     body = new For(f->arg(dim_index), r.start(), r.stop(), body);
   }
   return body;
@@ -746,6 +802,10 @@ void LoopNest::prepareForCodegen() {
       inlined_random_functions_.begin(), inlined_random_functions_.end());
   root_stmt_ = InjectInlines(root_stmt_, inlined_functions_vec);
   root_stmt_ = InlineRandom(root_stmt_, inlined_randoms_vec);
+
+  // Expand reduction ops.
+  ReductionExpander reduceExpander;
+  root_stmt_ = reduceExpander.expand(root_stmt_);
 
   // Flatten function calls.
   Flattener flattener;

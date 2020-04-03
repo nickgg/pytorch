@@ -12,7 +12,7 @@ static Dtype ChooseDtype(const Dtype& buffer_dtype, const Dtype& index_dtype) {
 
 static Dtype dtypeOfIndices(const std::vector<const Expr*>& indices) {
   if (!indices.size()) {
-    throw malformed_input();
+    return kInt;
   }
   Dtype dt = indices.at(0)->dtype();
   for (size_t i = 1; i < indices.size(); ++i) {
@@ -25,7 +25,7 @@ static Dtype dtypeOfIndices(const std::vector<const Expr*>& indices) {
 
 static bool indicesValid(const std::vector<const Expr*>& indices) {
   if (indices.size() == 0) {
-    return false;
+    return true;
   }
   Dtype index_dtype = dtypeOfIndices(indices);
   if (indices.size() > 1 && index_dtype.lanes() > 1) {
@@ -57,6 +57,7 @@ Load::Load(
   if (buf->base_handle()->dtype() != kHandle) {
     throw malformed_input();
   }
+
   if (!indicesValid(indices)) {
     throw malformed_input();
   }

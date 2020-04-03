@@ -1,27 +1,15 @@
 #include <torch/csrc/jit/tensorexpr/function.h>
 
 #include <c10/util/Logging.h>
+#include <torch/csrc/jit/tensorexpr/buffer.h>
+#include <torch/csrc/jit/tensorexpr/dim_arg.h>
+#include <torch/csrc/jit/tensorexpr/ir_printer.h>
+#include <torch/csrc/jit/tensorexpr/reduction.h>
 #include <torch/csrc/jit/tensorexpr/tensor.h>
 
 namespace torch {
 namespace jit {
 namespace tensorexpr {
-
-namespace {
-
-static void unpack_dim_args(
-    const std::vector<DimArg>& dim_args,
-    std::vector<const Expr*>* dims,
-    std::vector<const Var*>* vars) {
-  dims->clear();
-  vars->clear();
-  for (const DimArg& dim_arg : dim_args) {
-    dims->push_back(dim_arg.dim().node());
-    vars->push_back(new Var(dim_arg.name_hint(), kInt));
-  }
-}
-
-} // namespace
 
 Tensor* Compute(
     const std::string& func_name,
@@ -109,6 +97,32 @@ Tensor* Compute(
   Function* func = new Function(func_name, dims, args_nodes, body);
   const Buf* buf = func->func_var(0);
   return new Tensor(buf, func, 0);
+}
+
+TORCH_API Tensor* Reduce(
+    const std::string& func_name,
+    const std::vector<DimArg>& dim_args,
+    const ReducePrototype& reduce_proto,
+    const std::vector<DimArg>& reduce_args) {
+  std::vector<const Expr*> dims;
+  std::vector<const Var*> vars;
+  unpack_dim_args(dim_args, &dims, &vars);
+
+  std::vector<const Expr*> reduce_dims;
+  std::vector<const Var*> reduce_vars;
+  unpack_dim_args(reduce_args, &reduce_dims, &reduce_vars);
+
+  std::vector<const Var*> all_vars;
+  all_vars.insert(all_vars.end(), vars.begin(), vars.end());
+  all_vars.insert(all_vars.end(), reduce_vars.begin(), reduce_vars.end());
+
+  Buf* func_result = new Buf(new Var(func_name, kHandle), dims);
+
+  const Reducer* reducer = reduce_proto(func_result, vars, reduce_vars);
+  dims.insert(dims.end(), reduce_dims.begin(), reduce_dims.end());
+  Function* func =
+      new Function(func_name, func_result, dims, all_vars, reducer);
+  return new Tensor(func_result, func, 0);
 }
 
 Stmt* Function::ElementStmt(size_t index) {
