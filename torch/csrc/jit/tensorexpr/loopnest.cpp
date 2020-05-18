@@ -562,7 +562,7 @@ class FunctionInliner : public IRMutator {
   const Expr* mutate(const Var* v) override {
     auto iter = inline_mapping_.find(v);
     if (iter == inline_mapping_.end()) {
-      return v;
+      return IRMutator::mutate(v);
     } else {
       const Expr* expr = iter->second;
       // Continue to transform the value from the lookup table.
@@ -657,28 +657,28 @@ void LoopNest::computeInline(const Buf* b) {
     }
   }
 
-  try {
-    FunctionInliner inliner(relevant_store);
-    root_stmt_ = root_stmt_->accept_mutator(&inliner);
-  } catch (std::exception& e) {
-    std::cout << "inlining threw: " << e.what() << "\n";
-  }
+  FunctionInliner inliner(relevant_store);
+  root_stmt_ = root_stmt_->accept_mutator(&inliner);
+}
+catch (std::exception& e) {
+  std::cout << "inlining threw: " << e.what() << "\n";
+}
 
-  // No longer computing this intermediate tensor, so don't alloc it.
-  for (auto* t : intermediate_tensors_) {
-    if (b == t->buf()) {
-      intermediate_tensors_.erase(t);
-      break;
-    }
-  }
-
-  for (auto it = temp_bufs_.begin(); it != temp_bufs_.end(); ++it) {
-    if (b == *it) {
-      temp_bufs_.erase(it);
-      break;
-    }
+// No longer computing this intermediate tensor, so don't alloc it.
+for (auto* t : intermediate_tensors_) {
+  if (b == t->buf()) {
+    intermediate_tensors_.erase(t);
+    break;
   }
 }
+
+for (auto it = temp_bufs_.begin(); it != temp_bufs_.end(); ++it) {
+  if (b == *it) {
+    temp_bufs_.erase(it);
+    break;
+  }
+}
+} // namespace tensorexpr
 
 // TODO: Unify with DepTracker
 class UseFinder : public IRVisitor {
@@ -1632,6 +1632,6 @@ void LoopNest::rfactor(
   temp_bufs_.emplace_back(tmp_buf);
 }
 
-} // namespace tensorexpr
 } // namespace jit
+} // namespace torch
 } // namespace torch
