@@ -95,6 +95,10 @@ namespace jit {
   _(ReduceInlineReduction)                  \
   _(ReduceInlineConsumer)                   \
   _(ReduceInlineReducerInternal)            \
+  _(ReduceSplitRfactor)                     \
+  _(ReduceOverSplitRfactor)                 \
+  _(SplitReduceAxis)                        \
+  _(SplitNonReduceAxis)                     \
   _(TypeTest01)                             \
   _(TypePropagation)                        \
   _(Cond01)                                 \
