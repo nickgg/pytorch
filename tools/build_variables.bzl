@@ -207,6 +207,7 @@ libtorch_core_sources = [
     "torch/csrc/jit/serialization/source_range_serialization.cpp",
     "torch/csrc/jit/serialization/type_name_uniquer.cpp",
     "torch/csrc/jit/serialization/unpickler.cpp",
+    "torch/csrc/jit/tensorexpr/auto_tuner.cpp",
     "torch/csrc/jit/tensorexpr/bounds_inference.cpp",
     "torch/csrc/jit/tensorexpr/codegen.cpp",
     "torch/csrc/jit/tensorexpr/eval.cpp",

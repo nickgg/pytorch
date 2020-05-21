@@ -214,7 +214,8 @@ namespace jit {
   _(Kernel_2)                               \
   _(Kernel_3)                               \
   _(FuserPass_1)                            \
-  _(FuserPass_2)
+  _(FuserPass_2)                            \
+  _(AutotuningSimple)
 
 #define TH_FORALL_TENSOREXPR_TESTS_LLVM(_) \
   _(LLVMByteImmTest)                       \

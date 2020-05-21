@@ -461,6 +461,27 @@ LoopNest::LoopNest(const std::vector<Tensor*>& output_tensors)
   root_stmt_ = new Block(loops);
 }
 
+LoopNest::LoopNest(const LoopNest& other) {
+  output_tensors_ = other.output_tensors_;
+  intermediate_tensors_ = other.intermediate_tensors_;
+  root_stmt_ = Stmt::clone(other.root_stmt_);
+
+  temp_bufs_ = other.temp_bufs_;
+  buf_initializers_ = other.buf_initializers_;
+}
+
+std::vector<const Buf*> LoopNest::getIntermediateBufs() {
+  std::vector<const Buf*> bufs;
+
+  for (auto* t : intermediate_tensors_) {
+    bufs.push_back(t->buf());
+  }
+  for (auto* b : temp_bufs_) {
+    bufs.push_back(b);
+  }
+  return bufs;
+}
+
 Stmt* LoopNest::lowerToStmt(Tensor* t) {
   Function* f = t->function();
   // TODO: Support multiple-output functions
@@ -1075,14 +1096,13 @@ void LoopNest::reorderAxis(For* a, For* b) {
     newInner = loop->cloneWithNewBody(newInner);
   }
 
-  // Append the new statements to the root of the tree.
   if (before->body()->nstmts() == 0) {
-    // If the top level is now empty, eliminate it.
     root->replace_stmt(before, newInner);
   } else {
     root->insert_stmt_after(newInner, before);
   }
 
+  // Append the new statements to the root of the tree.
   if (after) {
     root->insert_stmt_after(after, newInner);
   }

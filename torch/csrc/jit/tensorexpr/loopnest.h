@@ -24,9 +24,16 @@ class Dtype;
 class TORCH_API LoopNest {
  public:
   LoopNest(const std::vector<Tensor*>& output_tensors);
+  LoopNest(const LoopNest& other);
   Stmt* root_stmt() const {
     return root_stmt_;
   }
+
+  const std::unordered_set<Tensor*>& getOutputTensors() {
+    return output_tensors_;
+  }
+
+  std::vector<const Buf*> getIntermediateBufs();
 
   // These Tensor-based loop/stmt accessors are valid only as long as no
   // transformations have been made.
