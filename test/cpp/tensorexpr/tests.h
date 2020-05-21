@@ -72,8 +72,6 @@ namespace jit {
   _(ReduceRfactorLike)                      \
   _(ReduceAsProducer)                       \
   _(ReduceAsConsumer)                       \
-  _(SplitReduceAxis)                        \
-  _(SplitNonReduceAxis)                     \
   _(ReorderedReductionInitializer)          \
   _(ReduceRfactor)                          \
   _(Reduce3DRfactor)                        \
@@ -95,8 +93,6 @@ namespace jit {
   _(ReduceInlineReduction)                  \
   _(ReduceInlineConsumer)                   \
   _(ReduceInlineReducerInternal)            \
-  _(ReduceSplitRfactor)                     \
-  _(ReduceOverSplitRfactor)                 \
   _(SplitReduceAxis)                        \
   _(SplitNonReduceAxis)                     \
   _(TypeTest01)                             \
@@ -215,7 +211,8 @@ namespace jit {
   _(Kernel_3)                               \
   _(FuserPass_1)                            \
   _(FuserPass_2)                            \
-  _(AutotuningSimple)
+  _(Autotuning1)                            \
+  _(Autotuning2)
 
 #define TH_FORALL_TENSOREXPR_TESTS_LLVM(_) \
   _(LLVMByteImmTest)                       \

@@ -6,6 +6,7 @@
 #include <torch/csrc/jit/tensorexpr/loopnest.h>
 #include <torch/csrc/jit/tensorexpr/tensor.h>
 
+#define USE_GPU 0
 #include <chrono>
 #include <random>
 
@@ -151,19 +152,72 @@ struct ComputeAt : public Transform {
   }
 };
 
+struct BindBlockIdx : public Transform {
+  std::string loopVar;
+  int idx;
+  BindBlockIdx(std::string l, int i) : loopVar(l), idx(i) {}
+
+  void log() const override {
+    std::cout << "BindBlockIdx(" << loopVar << ", " << idx << ")";
+  }
+
+  std::string name() const override {
+    return "BindBlockIdx";
+  }
+
+  Transform* clone() const override {
+    return new BindBlockIdx(loopVar, idx);
+  }
+};
+
+struct BindThreadIdx : public Transform {
+  std::string loopVar;
+  int idx;
+  BindThreadIdx(std::string l, int i) : loopVar(l), idx(i) {}
+
+  void log() const override {
+    std::cout << "BindThreadIdx(" << loopVar << ", " << idx << ")";
+  }
+
+  std::string name() const override {
+    return "BindThreadIdx";
+  }
+
+  Transform* clone() const override {
+    return new BindThreadIdx(loopVar, idx);
+  }
+};
+
+struct SwapAxisIdx : public Transform {
+  std::string before;
+  std::string after;
+  SwapAxisIdx(std::string b, std::string a) : before(b), after(a) {}
+
+  void log() const override {
+    std::cout << "SwapAxisIdx(" << before << ", " << after << ")";
+  }
+
+  std::string name() const override {
+    return "SwapAxisIdx";
+  }
+
+  Transform* clone() const override {
+    return new SwapAxisIdx(before, after);
+  }
+};
+
 } // namespace tuning
 
 class TORCH_API AutoTuner {
   class Candidate {
    public:
     Candidate(const LoopNest& n) : loopnest(n) {}
-    Candidate(
-        const LoopNest& n,
-        std::vector<tuning::Transform*>& other_schedule)
-        : loopnest(n) {
-      for (auto* t : other_schedule) {
+    Candidate(const LoopNest& n, Candidate* parent) : loopnest(n) {
+      for (auto* t : parent->schedule) {
         schedule.push_back(t->clone());
       }
+      nextBlockIdx = parent->nextBlockIdx;
+      nextThreadIdx = parent->nextThreadIdx;
     }
 
     void logSchedule() {
@@ -189,6 +243,8 @@ class TORCH_API AutoTuner {
     std::chrono::microseconds time{std::chrono::microseconds::max()};
     bool children_generated{false};
     SimplifierHashType hash;
+    int nextBlockIdx{0};
+    int nextThreadIdx{0};
 
     std::unique_ptr<CodeGen> codegen;
   };
@@ -228,6 +284,7 @@ class TORCH_API AutoTuner {
   std::unordered_map<const Var*, SizedBuffer> outputs_;
   std::unordered_map<const Var*, SizedBuffer> referenceOutputs_;
   bool referenceReady_{false};
+  std::unordered_map<const Var*, SizedBuffer> deviceBuffers_;
 
   // Generated schedules by schedule depth
   std::vector<std::deque<Candidate*>> potential_candidates_;
@@ -236,6 +293,7 @@ class TORCH_API AutoTuner {
 
   std::string codegenName_{"llvm_codegen"};
 
+  void initDeviceBuffer(const Var* v, int size);
   void GenerateCallArgs();
 
   void generateSplitWithTail(Candidate* c, int factor);
@@ -245,8 +303,11 @@ class TORCH_API AutoTuner {
   void generateInlining(Candidate* c);
   void generateRfactor(Candidate* c);
   // void generateComputeAt(Candidate* c);
+  void bindInitialAxes(Candidate* c);
+  void generateNextAxisBinding(Candidate* c);
+  void mutateAxisBinding(Candidate* c);
 
-  void generateChildren(Candidate* c, bool first);
+  bool generateChildren(Candidate* c, bool first);
   void generateNextCandidates();
   std::deque<Candidate*> pickCandidates(size_t num);
   bool addPotentialCandidate(Candidate* c);

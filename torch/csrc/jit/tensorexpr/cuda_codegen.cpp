@@ -733,9 +733,9 @@ void CudaCodeGen::Initialize() {
   printer_ =
       std::make_unique<CudaPrinter>(&oss_, cuda_analysis_.get(), has_random_);
 
-  os() << "#define NAN __int_as_float(0x7fffffff)\n"
-          "#define POS_INFINITY __int_as_float(0x7f800000)\n"
-          "#define NEG_INFINITY __int_as_float(0xff800000)\n";
+  // os() << "#define NAN __int_as_float(0x7fffffff)\n"
+  //         "#define POS_INFINITY __int_as_float(0x7f800000)\n"
+  //         "#define NEG_INFINITY __int_as_float(0xff800000)\n";
   if (has_random_) {
     os() << philox_random_string << std::endl;
   }
@@ -772,7 +772,7 @@ void CudaCodeGen::Initialize() {
     os() << ", " << uint64_str << " " << *rand_seed << ", " << uint64_str << " "
          << *rand_offset;
   }
-  os() << ") {";
+  os() << ")";
   os() << std::endl;
 
   if (has_random_) {
@@ -795,7 +795,6 @@ void CudaCodeGen::Initialize() {
   stmt_v->accept(cuda_analysis_.get());
   stmt_v->accept(printer_.get());
   os() << std::endl;
-  os() << "}";
 
   // Check that all block extents had been set.
   const std::vector<const Expr*>& gpu_block_extents =
@@ -1008,7 +1007,11 @@ void CudaCodeGen::CompileToNVRTC(
   AT_CUDA_NVRTC_CHECK(nvrtc().nvrtcGetPTX(program, ptx.data()));
 
   CUmodule module;
-  AT_CUDA_DRIVER_CHECK(nvrtc().cuModuleLoadData(&module, ptx.data()));
+  auto err = nvrtc().cuModuleLoadData(&module, ptx.data());
+  if (err != CUDA_SUCCESS) {
+    throw std::runtime_error("fail in cuModuleLoadData");
+  }
+
   AT_CUDA_DRIVER_CHECK(
       nvrtc().cuModuleGetFunction(&function_, module, func_name.c_str()));
 

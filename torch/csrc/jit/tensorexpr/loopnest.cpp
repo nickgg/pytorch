@@ -543,11 +543,15 @@ class FunctionInliner : public IRMutator {
     }
 
     if (buf == buf_) {
+      if (!producer_ || producer_->indices().size() != buf->ndim()) {
+        throw unimplemented_lowering();
+      }
       // Insert the caller/callee pair into the mapping.
       for (size_t i = 0; i < buf->ndim(); i++) {
         auto hash = hasher_.hash(producer_->indices()[i]);
         const Var* func_callee_arg = dynamic_cast<const Var*>(func->arg(i));
         const Expr* func_caller_param = v->param(i);
+
         auto iter = inline_mapping_.find(func_callee_arg);
         if (iter != inline_mapping_.end()) {
           throw std::runtime_error(
@@ -680,26 +684,22 @@ void LoopNest::computeInline(const Buf* b) {
 
   FunctionInliner inliner(relevant_store);
   root_stmt_ = root_stmt_->accept_mutator(&inliner);
-}
-catch (std::exception& e) {
-  std::cout << "inlining threw: " << e.what() << "\n";
-}
 
-// No longer computing this intermediate tensor, so don't alloc it.
-for (auto* t : intermediate_tensors_) {
-  if (b == t->buf()) {
-    intermediate_tensors_.erase(t);
-    break;
+  // No longer computing this intermediate tensor, so don't alloc it.
+  for (auto* t : intermediate_tensors_) {
+    if (b == t->buf()) {
+      intermediate_tensors_.erase(t);
+      break;
+    }
+  }
+
+  for (auto it = temp_bufs_.begin(); it != temp_bufs_.end(); ++it) {
+    if (b == *it) {
+      temp_bufs_.erase(it);
+      break;
+    }
   }
 }
-
-for (auto it = temp_bufs_.begin(); it != temp_bufs_.end(); ++it) {
-  if (b == *it) {
-    temp_bufs_.erase(it);
-    break;
-  }
-}
-} // namespace tensorexpr
 
 // TODO: Unify with DepTracker
 class UseFinder : public IRVisitor {
@@ -1120,12 +1120,56 @@ std::vector<For*> LoopNest::getLoopStmtsFor(Tensor* t) const {
   return std::vector<For*>(result.rbegin(), result.rend());
 }
 
+void maskSiblings(For* f) {
+  Block* parent = dynamic_cast<Block*>(f->get_parent());
+  if (!parent) {
+    return;
+  }
+  std::cout << "BEFORE: " << *parent << "\n";
+
+  std::vector<Stmt*> older_siblings;
+  std::vector<Stmt*> younger_siblings;
+  bool before = true;
+  for (auto* s : parent->stmts()) {
+    if (s == f) {
+      before = false;
+      continue;
+    }
+
+    parent->remove_stmt(s);
+    if (before) {
+      older_siblings.push_back(s);
+    } else {
+      younger_siblings.push_back(s);
+    }
+  }
+
+  if (!older_siblings.empty()) {
+    f->body()->prepend_stmt(new Cond(
+        new CompareSelect(
+            f->var(), f->start(), new IntImm(1), new IntImm(0), kEQ),
+        new Block(older_siblings),
+        new Block({})));
+  }
+  if (!younger_siblings.empty()) {
+    f->body()->append_stmt(new Cond(
+        new CompareSelect(
+            f->var(), f->start(), new IntImm(1), new IntImm(0), kEQ),
+        new Block(younger_siblings),
+        new Block({})));
+  }
+
+  std::cout << "AFTER: " << *parent << "\n";
+}
+
 void LoopNest::setGPUBlockIndex(For* f, int block_index) {
   f->set_gpu_block_index(block_index);
+  // maskSiblings(f);
 }
 
 void LoopNest::setGPUThreadIndex(For* f, int thread_index) {
   f->set_gpu_thread_index(thread_index);
+  // maskSiblings(f);
 }
 
 Stmt* LoopNest::getLoopBodyFor(Tensor* t) const {
@@ -1652,6 +1696,6 @@ void LoopNest::rfactor(
   temp_bufs_.emplace_back(tmp_buf);
 }
 
+} // namespace tensorexpr
 } // namespace jit
-} // namespace torch
 } // namespace torch

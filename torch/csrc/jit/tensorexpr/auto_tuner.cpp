@@ -6,6 +6,14 @@
 #include <torch/csrc/jit/tensorexpr/ir_simplifier.h>
 #include "torch/csrc/jit/tensorexpr/llvm_codegen.h"
 
+size_t MAX_SCHEDULE_DEPTH = 0;
+
+#if USE_GPU
+#include <torch/csrc/jit/tensorexpr/cuda_codegen.h>
+#else
+#include "torch/csrc/jit/tensorexpr/llvm_codegen.h"
+#endif
+
 namespace torch {
 namespace jit {
 namespace tensorexpr {
@@ -33,153 +41,261 @@ class VectorizeChecker : public IRVisitor {
 };
 
 void AutoTuner::generateSplitWithTail(Candidate* c, int factor) {
-  std::vector<Candidate*> new_candidates;
+  try {
+    std::vector<Candidate*> new_candidates;
 
-  auto initialLoops = NodeFinder<For>::find(c->loopnest.root_stmt());
+    auto initialLoops = NodeFinder<For>::find(c->loopnest.root_stmt());
 
-  for (int l = 0; l < initialLoops.size(); ++l) {
-    LoopNest temp(c->loopnest);
-    For* target = NodeFinder<For>::find(temp.root_stmt())[l];
+    for (int l = 0; l < initialLoops.size(); ++l) {
+      LoopNest temp(c->loopnest);
+      For* target = NodeFinder<For>::find(temp.root_stmt())[l];
 
-    For *o, *i, *t;
-    temp.splitWithTail(target, factor, &o, &i, &t);
+      For *o, *i, *t;
+      temp.splitWithTail(target, factor, &o, &i, &t);
 
-    Candidate* n = new Candidate(temp, c->schedule);
-    n->schedule.push_back(
-        new tuning::SplitWithTail(target->var()->name_hint(), factor));
-    new_candidates.push_back(n);
-  }
+      Candidate* n = new Candidate(temp, c);
+      n->schedule.push_back(
+          new tuning::SplitWithTail(target->var()->name_hint(), factor));
+      new_candidates.push_back(n);
+    }
 
-  for (auto* c : new_candidates) {
-    generateVectorize(c);
-    addPotentialCandidate(c);
+    for (auto* c : new_candidates) {
+      generateVectorize(c);
+      addPotentialCandidate(c);
+    }
+  } catch (std::exception& e) {
+    std::cout << "generate splitWithTail " << e.what() << "\n";
   }
 }
 
 void AutoTuner::generateSplitWithMask(Candidate* c, int factor) {
-  // OK so this is hacky.
-  auto initialLoops = NodeFinder<For>::find(c->loopnest.root_stmt());
-  for (int l = 0; l < initialLoops.size(); ++l) {
-    LoopNest temp(c->loopnest);
-    For* target = NodeFinder<For>::find(temp.root_stmt())[l];
-    For *o, *i;
-    temp.splitWithMask(target, factor, &o, &i);
+  try {
+    auto initialLoops = NodeFinder<For>::find(c->loopnest.root_stmt());
+    for (int l = 0; l < initialLoops.size(); ++l) {
+      LoopNest temp(c->loopnest);
+      For* target = NodeFinder<For>::find(temp.root_stmt())[l];
+      if (!target->loop_options().isDefault()) {
+        continue;
+      }
+      For *o, *i;
+      temp.splitWithMask(target, factor, &o, &i);
+      // std::cout << *target << "\b";
 
-    Candidate* n = new Candidate(temp, c->schedule);
-    n->schedule.push_back(
-        new tuning::SplitWithMask(target->var()->name_hint(), factor));
-    addPotentialCandidate(n);
+      Candidate* n = new Candidate(temp, c);
+      n->schedule.push_back(
+          new tuning::SplitWithMask(target->var()->name_hint(), factor));
+      addPotentialCandidate(n);
+    }
+  } catch (std::exception& e) {
+    std::cout << "generate splitWithMask " << e.what() << "\n";
   }
 }
 
 void AutoTuner::generateVectorize(Candidate* c) {
-  // OK so this is hacky.
-  auto initialLoops = NodeFinder<For>::find(c->loopnest.root_stmt());
-  for (int l = 0; l < initialLoops.size(); ++l) {
-    For* loop = initialLoops[l];
-    // std::cout << "want to vectorize " << loop->var()->name_hint() << ": ";
-    if (!NodeFinder<For>::find(loop->body()).empty()) {
-      // std::cout << "not inner loop\n";
-      continue;
+  try {
+    auto initialLoops = NodeFinder<For>::find(c->loopnest.root_stmt());
+    for (int l = 0; l < initialLoops.size(); ++l) {
+      For* loop = initialLoops[l];
+      // std::cout << "want to vectorize " << loop->var()->name_hint() << ": ";
+      if (!NodeFinder<For>::find(loop->body()).empty()) {
+        // std::cout << "not inner loop\n";
+        continue;
+      }
+
+      if (VectorizeChecker::isVectorized(loop->body())) {
+        // std::cout << "already vectorized\n";
+        continue;
+      }
+
+      if (!loop->stop()->isConstant()) {
+        // std::cout << "non const loop stop (" << *loop->stop() << ")\n";
+        continue;
+      }
+
+      auto reduces = NodeFinder<const ReduceOp>::find(loop->body());
+      if (!reduces.empty()) {
+        // std::cout << "contains reductions\n";
+        continue;
+      }
+
+      const Expr* s =
+          IRSimplifier::simplify(new Sub(loop->stop(), loop->start()));
+
+      if (!s->isConstant()) {
+        // std::cout << "non constant length : " << *s << "\n";
+        continue;
+      }
+
+      int loop_len = immediateAs<int>(s);
+      if (loop_len == 4 || loop_len == 8 || loop_len == 16 || loop_len == 32) {
+        LoopNest temp(c->loopnest);
+        For* target = NodeFinder<For>::find(temp.root_stmt())[l];
+        // std::cout << "I AM VECTORIZING!\n";
+        temp.vectorize(target);
+
+        Candidate* n = new Candidate(temp, c);
+        n->schedule.push_back(
+            new tuning::Vectorize(target->var()->name_hint()));
+        addPotentialCandidate(n);
+      } else {
+      }
     }
-
-    if (VectorizeChecker::isVectorized(loop->body())) {
-      // std::cout << "already vectorized\n";
-      continue;
-    }
-
-    if (!loop->stop()->isConstant()) {
-      // std::cout << "non const loop stop (" << *loop->stop() << ")\n";
-      continue;
-    }
-
-    auto reduces = NodeFinder<const ReduceOp>::find(loop->body());
-    if (!reduces.empty()) {
-      // std::cout << "contains reductions\n";
-      continue;
-    }
-
-    const Expr* s =
-        IRSimplifier::simplify(new Sub(loop->stop(), loop->start()));
-
-    if (!s->isConstant()) {
-      // std::cout << "non constant length : " << *s << "\n";
-      continue;
-    }
-
-    int loop_len = immediateAs<int>(s);
-    if (loop_len == 4 || loop_len == 8 || loop_len == 16 || loop_len == 32) {
-      LoopNest temp(c->loopnest);
-      For* target = NodeFinder<For>::find(temp.root_stmt())[l];
-      // std::cout << "I AM VECTORIZING!\n";
-      temp.vectorize(target);
-
-      Candidate* n = new Candidate(temp, c->schedule);
-      n->schedule.push_back(new tuning::Vectorize(target->var()->name_hint()));
-      addPotentialCandidate(n);
-    } else {
-    }
+  } catch (std::exception& e) {
+    std::cout << "generate Vectorize " << e.what() << "\n";
   }
 }
 
 void AutoTuner::generateReorder(Candidate* c) {
-  // OK so this is hacky.
-  auto initialLoops = NodeFinder<For>::find(c->loopnest.root_stmt());
-  for (int l = 0; l < initialLoops.size(); ++l) {
-    For* loop = initialLoops[l];
-    auto internal_loops = NodeFinder<For>::find(loop->body());
-    if (internal_loops.empty()) {
-      continue;
-    }
+  try {
+    auto initialLoops = NodeFinder<For>::find(c->loopnest.root_stmt());
+    for (int l = 0; l < initialLoops.size(); ++l) {
+      For* loop = initialLoops[l];
+      auto internal_loops = NodeFinder<For>::find(loop->body());
+      if (internal_loops.empty()) {
+        continue;
+      }
 
-    for (int il = 0; il < internal_loops.size(); ++il) {
-      LoopNest temp(c->loopnest);
-      auto new_loops = NodeFinder<For>::find(temp.root_stmt());
-      For* outer = new_loops[l];
-      For* inner = new_loops[l + 1 + il];
-      temp.reorderAxis(outer, inner);
+      for (int il = 0; il < internal_loops.size(); ++il) {
+        LoopNest temp(c->loopnest);
+        auto new_loops = NodeFinder<For>::find(temp.root_stmt());
+        For* outer = new_loops[l];
+        For* inner = new_loops[l + 1 + il];
+        temp.reorderAxis(outer, inner);
 
-      Candidate* n = new Candidate(temp, c->schedule);
-      n->schedule.push_back(new tuning::ReorderAxis(
-          outer->var()->name_hint(), inner->var()->name_hint()));
-      addPotentialCandidate(n);
+        Candidate* n = new Candidate(temp, c);
+        n->schedule.push_back(new tuning::ReorderAxis(
+            outer->var()->name_hint(), inner->var()->name_hint()));
+        addPotentialCandidate(n);
+      }
     }
+  } catch (std::exception& e) {
+    std::cout << "generate ReorderAxis " << e.what() << "\n";
   }
 }
 
 void AutoTuner::generateInlining(Candidate* c) {
-  auto intermediates = c->loopnest.getIntermediateBufs();
+  try {
+    auto intermediates = c->loopnest.getIntermediateBufs();
 
-  for (int i = 0; i < intermediates.size(); ++i) {
-    LoopNest temp(c->loopnest);
-    const Buf* buf = temp.getIntermediateBufs()[i];
-    try {
-      temp.computeInline(buf);
-    } catch (std::exception& e) {
-      continue;
+    for (int i = 0; i < intermediates.size(); ++i) {
+      LoopNest temp(c->loopnest);
+      const Buf* buf = temp.getIntermediateBufs()[i];
+      try {
+        temp.computeInline(buf);
+      } catch (std::exception& e) {
+        continue;
+      }
+
+      Candidate* n = new Candidate(temp, c);
+      n->schedule.push_back(new tuning::Inline(buf->name_hint()));
+      addPotentialCandidate(n);
     }
-
-    Candidate* n = new Candidate(temp, c->schedule);
-    n->schedule.push_back(new tuning::Inline(buf->name_hint()));
-    addPotentialCandidate(n);
+  } catch (std::exception& e) {
+    std::cout << "generate ComputeInline " << e.what() << "\n";
   }
 }
 
 void AutoTuner::generateRfactor(Candidate* c) {
-  auto reductions = NodeFinder<ReduceOp>::find(c->loopnest.root_stmt());
-  for (const ReduceOp* op : reductions) {
-    if (op->reduce_args().size() < 2) {
-      continue;
+  try {
+    auto reductions = NodeFinder<ReduceOp>::find(c->loopnest.root_stmt());
+    for (const ReduceOp* op : reductions) {
+      if (op->reduce_args().size() < 2) {
+        continue;
+      }
+
+      for (const Var* var : op->reduce_args()) {
+        LoopNest temp(c->loopnest);
+        temp.rfactor(op, var);
+
+        Candidate* n = new Candidate(temp, c);
+        n->schedule.push_back(new tuning::Rfactor(
+            op->accumulator()->name_hint(), var->name_hint()));
+        addPotentialCandidate(n);
+      }
+    }
+  } catch (std::exception& e) {
+    std::cout << "generate Rfactor " << e.what() << "\n";
+  }
+}
+
+void AutoTuner::bindInitialAxes(Candidate* c) {
+  try {
+    auto initialLoops = NodeFinder<For>::find(c->loopnest.root_stmt());
+    // TODO check this binding works, if we break the original canidate we're
+    // stuck.
+
+    if (initialLoops.size() > 1) {
+      c->loopnest.setGPUBlockIndex(initialLoops[1], 0);
+      c->schedule.push_back(new tuning::BindBlockIdx(
+          initialLoops[1]->var()->name_hint(), c->nextBlockIdx++));
     }
 
-    for (const Var* var : op->reduce_args()) {
-      LoopNest temp(c->loopnest);
-      temp.rfactor(op, var);
+    if (initialLoops.size() > 0) {
+      c->loopnest.setGPUThreadIndex(initialLoops[0], 0);
+      c->schedule.push_back(new tuning::BindThreadIdx(
+          initialLoops[0]->var()->name_hint(), c->nextThreadIdx++));
+    }
+  } catch (std::exception& e) {
+    std::cout << "generate BindAxis " << e.what() << "\n";
+  }
+}
 
-      Candidate* n = new Candidate(temp, c->schedule);
-      n->schedule.push_back(new tuning::Rfactor(
-          op->accumulator()->name_hint(), var->name_hint()));
-      addPotentialCandidate(n);
+void AutoTuner::generateNextAxisBinding(Candidate* c) {
+  auto initialLoops = NodeFinder<For>::find(c->loopnest.root_stmt());
+  for (int l = 0; l < initialLoops.size(); ++l) {
+    if (c->nextBlockIdx < 3) {
+      LoopNest temp(c->loopnest);
+      For* target = NodeFinder<For>::find(temp.root_stmt())[l];
+      if (target->loop_options().isDefault()) {
+        temp.setGPUBlockIndex(target, c->nextBlockIdx);
+
+        Candidate* n = new Candidate(temp, c);
+        n->schedule.push_back(new tuning::BindBlockIdx(
+            target->var()->name_hint(), n->nextBlockIdx++));
+        addPotentialCandidate(n);
+      }
+    }
+
+    if (c->nextThreadIdx < 3) {
+      LoopNest temp(c->loopnest);
+      For* target = NodeFinder<For>::find(temp.root_stmt())[l];
+      if (target->loop_options().isDefault()) {
+        temp.setGPUThreadIndex(target, c->nextThreadIdx);
+
+        Candidate* n = new Candidate(temp, c);
+        n->schedule.push_back(new tuning::BindThreadIdx(
+            target->var()->name_hint(), n->nextThreadIdx++));
+        addPotentialCandidate(n);
+      }
+    }
+  }
+}
+
+void AutoTuner::mutateAxisBinding(Candidate* c) {
+  auto initialLoops = NodeFinder<For>::find(c->loopnest.root_stmt());
+  for (int l = 0; l < initialLoops.size(); ++l) {
+    if (!initialLoops[l]->loop_options().isDefault()) {
+      for (int k = 0; k < initialLoops.size(); ++k) {
+        if (l == k) {
+          continue;
+        }
+
+        // Do a swap.
+        LoopNest temp(c->loopnest);
+        auto tempLoops = NodeFinder<For>::find(temp.root_stmt());
+        For* before = tempLoops[l];
+        For* after = tempLoops[k];
+
+        // swap.
+        auto tempOpts = before->loop_options();
+        before->set_loop_options(after->loop_options());
+        after->set_loop_options(tempOpts);
+
+        Candidate* n = new Candidate(temp, c);
+        n->schedule.push_back(new tuning::SwapAxisIdx(
+            before->var()->name_hint(), after->var()->name_hint()));
+        addPotentialCandidate(n);
+      }
     }
   }
 }
@@ -229,6 +345,7 @@ bool AutoTuner::addPotentialCandidate(Candidate* c) {
   c->hash = hashCandidateStmt(c->loopnest.root_stmt());
 
   if (candidatesByHash_.emplace(c->hash, c).second == false) {
+    // std::cout << "HASH Collision: \n";
     return false;
   }
   auto end = std::chrono::high_resolution_clock::now();
@@ -246,23 +363,37 @@ bool AutoTuner::addPotentialCandidate(Candidate* c) {
   //   std::cout << "\n";
   // }
   potential_candidates_[c->depth()].push_back(c);
+  // std::cout << "Added potential candidate" << *c->loopnest.root_stmt() <<
+  // "\n";
 
   return true;
 }
 
-void AutoTuner::generateChildren(Candidate* c, bool first) {
+bool AutoTuner::generateChildren(Candidate* c, bool first) {
+  if (c->children_generated || c->depth() >= MAX_SCHEDULE_DEPTH) {
+    return false;
+  }
+
   generateReorder(c);
   generateInlining(c);
   generateRfactor(c);
 
-  // if (!first_) {
-  std::vector<int> factors = {2, 3, 4, 8, 16, 32, 64};
+  std::vector<int> factors = {2, 3, 8, 32};
+  // std::vector<int> factors = {2, 3, 4, 8, 16, 32};
   for (int f : factors) {
+#if USE_GPU
+    generateSplitWithMask(c, f);
+#else
     generateSplitWithTail(c, f);
-    // Cond unimplemented in LLVM backend
-    // generateSplitWithMask(c, f);
+#endif
   }
-  // }
+
+#if USE_GPU
+  mutateAxisBinding(c);
+  generateNextAxisBinding(c);
+#endif
+  c->children_generated = true;
+  return true;
 }
 
 void AutoTuner::generateNextCandidates() {
@@ -270,22 +401,18 @@ void AutoTuner::generateNextCandidates() {
   int done = 0;
   while (done < 3 && c_it != resolved_candidates_.end()) {
     Candidate* c = *c_it++;
-    if (c->children_generated) {
-      continue;
+    if (generateChildren(c, first_)) {
+      done++;
     }
-    generateChildren(c, first_);
-    done++;
   }
   std::random_shuffle(resolved_candidates_.begin(), resolved_candidates_.end());
   c_it = resolved_candidates_.begin();
 
   while (done < 5 && c_it != resolved_candidates_.end()) {
     Candidate* c = *c_it++;
-    if (c->children_generated) {
-      continue;
+    if (generateChildren(c, first_)) {
+      done++;
     }
-    generateChildren(c, first_);
-    done++;
   }
   first_ = false;
 }
@@ -295,10 +422,10 @@ std::deque<AutoTuner::Candidate*> AutoTuner::pickCandidates(size_t num) {
   size_t depth = potential_candidates_.size();
   int picked = 0;
   std::deque<Candidate*> results;
-  std::cout << "potential by depth: ";
+  // std::cout << "potential by depth: ";
   for (int i = 0; i < depth; ++i) {
     std::deque<Candidate*>& depthList = potential_candidates_[i];
-    std::cout << depthList.size() << " ";
+    // std::cout << depthList.size() << " ";
     std::random_shuffle(depthList.begin(), depthList.end());
     while (picked < (i * (num / depth)) && !depthList.empty()) {
       results.push_back(depthList.front());
@@ -306,7 +433,7 @@ std::deque<AutoTuner::Candidate*> AutoTuner::pickCandidates(size_t num) {
       picked++;
     }
   }
-  std::cout << "\n";
+  // std::cout << "\n";
 
   while (picked < num) {
     bool found = false;
@@ -335,12 +462,18 @@ void AutoTuner::run(int iterations) {
 
   size_t initial = 0;
   if (resolved_candidates_.empty()) {
-    std::cout << *rootNest_.root_stmt() << "\n";
-    resolved_candidates_.push_back(new Candidate(LoopNest(rootNest_)));
+    // std::cout << *rootNest_.root_stmt() << "\n";
+    Candidate* c = new Candidate(LoopNest(rootNest_));
+#if USE_GPU
+    bindInitialAxes(c);
+#endif
+    resolved_candidates_.push_back(c);
     runCandidate(resolved_candidates_.back());
     initial = resolved_candidates_.back()->time.count();
-    std::cout << "Initial Kernel: " << initial << "us\n";
+    // std::cout << "Initial Kernel: " << initial << "us\n";
     potential_candidates_.resize(1);
+    c->hash = hashCandidateStmt(c->loopnest.root_stmt());
+    candidatesByHash_.emplace(c->hash, c);
 
     // Now we have reference results:
     for (auto& pair : outputs_) {
@@ -352,6 +485,9 @@ void AutoTuner::run(int iterations) {
 
   // Generate Candidates
   for (int run = 0; run < iterations; ++run) {
+    if (run % 3 == 0) {
+      MAX_SCHEDULE_DEPTH += 2;
+    }
     // Generate some new candidates.
     auto start = std::chrono::high_resolution_clock::now();
     try {
@@ -364,8 +500,8 @@ void AutoTuner::run(int iterations) {
         std::chrono::duration_cast<std::chrono::milliseconds>(gen_end - start);
 
     // Pick some candidates.
-    auto candidates = pickCandidates(50);
-    std::cout << "got " << candidates.size() << " candidates\n";
+    auto candidates = pickCandidates(200);
+    // std::cout << "got " << candidates.size() << " candidates\n";
     size_t numCandidates = candidates.size();
 
     // Run Candidates.
@@ -403,7 +539,7 @@ void AutoTuner::run(int iterations) {
     sortCandidates();
 
     // Now get some more confidence.
-    bool confident = true;
+    bool confident = false;
     while (!confident) {
       // std::cout << "building condfidence in timing...\n";
       bool optimist = true;
@@ -412,7 +548,7 @@ void AutoTuner::run(int iterations) {
           continue;
         }
 
-        if (resolved_candidates_[i]->runs < ((1 + run) * 2)) {
+        if (resolved_candidates_[i]->runs < ((1 + run) * 3)) {
           runCandidate(resolved_candidates_[i]);
           optimist = false;
         }
@@ -429,59 +565,80 @@ void AutoTuner::run(int iterations) {
     Candidate* best = resolved_candidates_.front();
     size_t best_time = best->time.count();
     double speedup = (1. - (double)best_time / (double)initial) * 100;
-    std::cout << "Run " << run << " " << numCandidates << " candidates in "
-              << std::chrono::duration_cast<std::chrono::milliseconds>(
-                     end - start)
-                     .count()
-              << "ms : " << generated_ << " generated, " << tested_
-              << " tested, " << resolved_candidates_.size() << " total.\n";
-    std::cout << "best Time : " << best_time << "us - speedup: " << speedup;
-    std::cout << " (ran " << best->runs << " times) - hash: " << best->hash._h;
-    std::cout << "\nBest schedule: ";
+    std::cout
+        << "\n===========================================================\n";
+    std::cout << "Generation " << run << "\n";
+    std::cout << "  evaluated " << numCandidates << " candidates in "
+              << (std::chrono::duration_cast<std::chrono::milliseconds>(
+                      end - start)
+                      .count() /
+                  1000.0)
+              << "s \n";
+    std::cout << "  best Time : " << best_time << "us - speedup: " << speedup;
+    std::cout << " (ran " << best->runs << " times)\n";
+    std::cout << "  Schedule:\n\t";
     best->logSchedule();
     std::cout << "\n";
-    Stmt* simplified = best->loopnest.root_stmt()
-                           ->accept_mutator(&simplifier)
-                           ->accept_mutator(&expander);
+    std::cout
+        << "===========================================================\n";
+    // Stmt* simplified = best->loopnest.root_stmt()
+    //                        ->accept_mutator(&simplifier)
+    //                        ->accept_mutator(&expander);
 
-    std::cout << *simplified << "\n";
+    // std::cout << *simplified << "\n";
 
     generated_ = 0;
     tested_ = 0;
   }
 
-  std::cout << generation_time.count() << "ms generating candidates, "
-            << codegen_time.count() << " ms generating code\n";
-  std::cout << hashing_time.count() << "ms hashing, " << simplify_time.count()
-            << "ms simplifying\n";
-  std::cout << running_time.count() << "ms running candidates, "
-            << sorting_time.count() << "ms sorting candidates\n";
-  std::cout << checking_time.count() << "ms checking outputs\n";
+  std::cout << "\n\n";
+  for (int i = 0; i < 10; ++i) {
+    if (i >= resolved_candidates_.size()) {
+      break;
+    }
+    Candidate* c = resolved_candidates_[i];
+    c->runs = 0;
+    c->time = std::chrono::microseconds(0);
 
-  std::cout << runStats_.success << " success, " << runStats_.codegen_fail
-            << " fail at codegen\n";
-  std::cout << runStats_.run_fail << " fail at runtime, "
-            << runStats_.bad_output << " had bad outputs\n";
-
-  std::vector<std::string> opNames = {"Vectorize",
-                                      "SplitWithMask",
-                                      "SplitWithTail",
-                                      "ReorderAxis",
-                                      "Rfactor",
-                                      "Inline"};
-
-  for (auto& name : opNames) {
-    RunStats& opStats = perOpStats_[name];
-    std::cout << name << ": " << opStats.success << " " << opStats.codegen_fail
-              << " " << opStats.run_fail << " " << opStats.bad_output << "\n";
+    for (int i = 0; i < 100; ++i) {
+      runCandidate(c);
+    }
+    std::cout << "Candidate " << i << " (" << c->time.count() << "us | "
+              << c->runs << "):\n\t";
+    c->logSchedule();
+    std::cout << "\n";
   }
 
-  // for (int i = 0; i < 20; ++i) {
-  //   Candidate* c = resolved_candidates_[i];
-  //   std::cout << "Candidate " << i << " (" << c->time.count() << "us | "
-  //             << c->runs << "): ";
-  //   c->logSchedule();
-  //   std::cout << " - hash: " << c->hash._h << "\n";
+  std::cout << "\nRun summary: \n";
+  std::cout << "\t" << generation_time.count() << "ms generating candidates\n";
+  std::cout << "\t" << codegen_time.count() << " ms generating code\n";
+  std::cout << "\t" << hashing_time.count() << "ms hashing\n";
+  std::cout << "\t" << simplify_time.count() << "ms simplifying\n";
+  std::cout << "\t" << running_time.count() << "ms running candidates\n";
+  std::cout << "\t" << sorting_time.count() << "ms sorting candidates\n";
+  std::cout << "\t" << checking_time.count() << "ms verifying outputs\n";
+  std::cout << "\n";
+  std::cout << "\t" << runStats_.success << " candidates succeeded\n";
+  std::cout << "\t" << runStats_.codegen_fail << " fail at codegen\n";
+  std::cout << "\t" << runStats_.run_fail << " fail at runtime\n";
+  std::cout << "\t" << runStats_.bad_output << " had bad outputs\n";
+
+  // std::vector<std::string> opNames = {"Vectorize",
+  //                                     "SplitWithMask",
+  //                                     "SplitWithTail",
+  //                                     "ReorderAxis",
+  //                                     "Rfactor",
+  //                                     "Inline",
+  //                                     "BindBlockIdx",
+  //                                     "BindThreadIdx",
+  //                                     "SwapAxisIdx"};
+
+  // for (auto& name : opNames) {
+  //   RunStats& opStats = perOpStats_[name];
+  //   std::cout << name << ": " << opStats.success << " " <<
+  //   opStats.codegen_fail
+  //             << " " << opStats.run_fail << " " << opStats.bad_output <<
+  //             "\n";
   // }
 
   // Candidate* best = resolved_candidates_.front();
@@ -505,7 +662,6 @@ template <typename T>
 typename std::enable_if<std::is_integral<T>::value, T*>::type getRandomArg(
     size_t len) {
   T* ret = new T[len];
-
   std::random_device rd;
   std::mt19937 gen(rd());
   // TODO what's a sensible distribution here?
@@ -536,6 +692,14 @@ typename std::enable_if<std::is_floating_point<T>::value, T*>::type getRandomArg
   return ret;
 }
 
+void AutoTuner::initDeviceBuffer(const Var* v, int size) {
+#if USE_GPU
+  int* bdev = nullptr;
+  cudaMalloc(&bdev, size);
+  deviceBuffers_[v] = {(void*)bdev, size};
+#endif
+}
+
 void AutoTuner::GenerateCallArgs() {
   auto boundsInfo = inferBounds(rootNest_.root_stmt());
 
@@ -564,6 +728,7 @@ void AutoTuner::GenerateCallArgs() {
       outputs_[v] = {(void*)getRandomArg<Type>(s), s * sizeof(Type)};          \
       referenceOutputs_[v] = {(void*)getRandomArg<Type>(s), s * sizeof(Type)}; \
     }                                                                          \
+    initDeviceBuffer(v, s * sizeof(Type));                                     \
   } break;
       AT_FORALL_SCALAR_TYPES(TYPE_CASE);
 #undef TYPE_CASE
@@ -579,7 +744,7 @@ void AutoTuner::GenerateCallArgs() {
       // arg doesn't actually exist but run will need it.
       std::cout << "inventing dummy arg for unused argument "
                 << b.var()->name_hint() << "\n";
-      argData_[b.var()].emplace_back((void*)getRandomArg<int>(1));
+      argData_[b.var()].emplace_back((void*)getRandomArg<float>(1));
     }
   }
 }
@@ -605,8 +770,8 @@ void AutoTuner::sortCandidates() {
 bool AutoTuner::checkOutputs() {
   auto start = std::chrono::high_resolution_clock::now();
   for (auto& pair : outputs_) {
-    int* output = (int*)pair.second.ptr;
-    int* reference = (int*)referenceOutputs_[pair.first].ptr;
+    float* output = (float*)pair.second.ptr;
+    float* reference = (float*)referenceOutputs_[pair.first].ptr;
     for (int i = 0; i < pair.second.len / 4; ++i) {
       if (output[i] != reference[i]) {
         auto end = std::chrono::high_resolution_clock::now();
@@ -639,9 +804,15 @@ AutoTuner::RunResult AutoTuner::runCandidate(Candidate* c) {
     s = IRSimplifier::simplify(temp.root_stmt());
     auto pre_codegen = std::chrono::high_resolution_clock::now();
     try {
+#if USE_GPU
+      c->codegen = std::make_unique<CudaCodeGen>(s, args_);
+#else
       c->codegen = std::make_unique<LLVMCodeGen>(s, args_);
+#endif
     } catch (std::exception& e) {
-      // std::cout << "Codegen Failed: " << *c->loopnest.root_stmt() << "\n";
+      // std::cout << "Codegen Failed: " << *s << "\n";
+      // std::cout << e.what() << "\n";
+      c->codegen.reset();
       return CODEGEN_FAIL;
     }
 
@@ -662,17 +833,25 @@ AutoTuner::RunResult AutoTuner::runCandidate(Candidate* c) {
 
   std::vector<CodeGen::CallArg> runArgs;
   for (auto& b : args_) {
+    auto dIt = deviceBuffers_.find(b.var());
+    if (dIt != deviceBuffers_.end()) {
+      runArgs.push_back(dIt->second.ptr);
+      continue;
+    }
+
     auto it = argData_.find(b.var());
     if (it != argData_.end()) {
       auto oit = outputs_.find(b.var());
       if (oit != outputs_.end()) {
         runArgs.push_back(oit->second.ptr);
+        continue;
       } else {
         runArgs.push_back(it->second.front());
+        continue;
       }
-    } else {
-      std::cout << "COULDNT FIND " << b.var()->name_hint() << "\n";
     }
+
+    std::cout << "COULDNT FIND " << b.var()->name_hint() << "\n";
   }
 
   tested_++;
@@ -693,18 +872,42 @@ AutoTuner::RunResult AutoTuner::runCandidate(Candidate* c) {
   try {
     for (int i = 0; i < new_runs; ++i) {
       for (auto& pair : outputs_) {
-        int* output = (int*)pair.second.ptr;
+        float* output = (float*)pair.second.ptr;
         assert(argData_.find(pair.first) != argData_.end());
         CodeGen::CallArg& arg = argData_[pair.first].back();
         void* reference = arg.data();
         memcpy(output, reference, pair.second.len);
       }
 
+#if USE_GPU
+      for (auto& pair : deviceBuffers_) {
+        float* host = (float*)argData_[pair.first].back().data();
+        float* device = (float*)pair.second.ptr;
+        cudaMemcpy(device, host, pair.second.len, cudaMemcpyHostToDevice);
+      }
+      cudaDeviceSynchronize();
+#endif
+
       auto start = std::chrono::high_resolution_clock::now();
       c->codegen->call(runArgs);
+#if USE_GPU
+      cudaDeviceSynchronize();
+#endif
       auto end = std::chrono::high_resolution_clock::now();
       total +=
           std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+
+#if USE_GPU
+      for (auto& pair : outputs_) {
+        if (!deviceBuffers_.count(pair.first)) {
+          continue;
+        }
+        float* host = (float*)pair.second.ptr;
+        float* device = (float*)deviceBuffers_[pair.first].ptr;
+        cudaMemcpy(host, device, pair.second.len, cudaMemcpyDeviceToHost);
+      }
+      cudaDeviceSynchronize();
+#endif
 
       if (referenceReady_ && !checkOutputs()) {
         c->runs += i + 1;
@@ -713,6 +916,7 @@ AutoTuner::RunResult AutoTuner::runCandidate(Candidate* c) {
     }
 
   } catch (std::exception& e) {
+    // std::cout << "Run Fail " << e.what() << "\n";
     return RUN_FAIL;
   }
   running_time += std::chrono::duration_cast<std::chrono::milliseconds>(total);
