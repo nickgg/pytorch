@@ -48,3 +48,27 @@ if(INSTALL_TEST)
     install(FILES $<TARGET_PDB_FILE:test_tensorexpr> DESTINATION bin OPTIONAL)
   endif()
 endif()
+
+add_executable(nnc_autotuner
+  ${TENSOREXPR_TEST_ROOT}/autotuning/nnc_autotuner.cpp)
+target_link_libraries(nnc_autotuner PRIVATE torch)
+target_include_directories(nnc_autotuner PRIVATE ${ATen_CPU_INCLUDE})
+
+if(USE_CUDA)
+  target_link_libraries(nnc_autotuner PRIVATE
+    ${CUDA_LIBRARIES}
+    ${CUDA_NVRTC_LIB}
+    ${CUDA_CUDA_LIB}
+    ${TORCH_CUDA_LIBRARIES})
+
+  target_compile_definitions(nnc_autotuner PRIVATE USE_CUDA)
+elseif(USE_ROCM)
+  target_link_libraries(nnc_autotuner PRIVATE
+    ${ROCM_HIPRTC_LIB}
+    ${PYTORCH_HIP_HCC_LIBRARIES}
+    ${TORCH_CUDA_LIBRARIES})
+
+  target_link_libraries(nnc_autotuner PRIVATE caffe2_gpu)
+
+  target_compile_definitions(nnc_autotuner PRIVATE USE_ROCM)
+endif()

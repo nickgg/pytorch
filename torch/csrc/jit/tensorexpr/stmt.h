@@ -651,6 +651,14 @@ class TORCH_API For : public StmtNode<For> {
     loop_options_.set_gpu_thread_index(thread_index);
   }
 
+  void set_loop_options(const LoopOptions& opts) {
+    loop_options_ = opts;
+  }
+
+  void clear_loop_options() {
+    loop_options_ = LoopOptions();
+  }
+
   For* cloneWithNewBody(Stmt* body) const {
     return new For(var_, start_, stop_, body, loop_options_);
   }

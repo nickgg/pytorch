@@ -452,12 +452,12 @@ class TORCH_API TermExpander : public IRSimplifierBase {
 
 class TORCH_API IRSimplifier {
  public:
-  static const Expr* simplify(const Expr* e) {
-    PolynomialTransformer simplifier;
+  IRSimplifier() : expander(&simplifier) {}
+
+  const Expr* simplify_inline(const Expr* e) {
     e = e->accept_mutator(&simplifier);
 
     // There may be terms left in the IR, expand them.
-    TermExpander expander(&simplifier);
     e = e->accept_mutator(&expander);
     if (!expander.check_safe()) {
       throw malformed_input("eliminated null Allocation without free");
@@ -466,16 +466,14 @@ class TORCH_API IRSimplifier {
     return e;
   }
 
-  static ExprHandle simplify(const ExprHandle& e) {
+  ExprHandle simplify_inline(const ExprHandle& e) {
     return ExprHandle(simplify(e.node()));
   }
 
-  static Stmt* simplify(Stmt* s) {
-    PolynomialTransformer simplifier;
+  Stmt* simplify_inline(Stmt* s) {
     s = s->accept_mutator(&simplifier);
 
     // There may be terms left in the IR, expand them.
-    TermExpander expander(&simplifier);
     s = s->accept_mutator(&expander);
     if (!expander.check_safe()) {
       throw malformed_input("eliminated null Allocation without free");
@@ -483,6 +481,33 @@ class TORCH_API IRSimplifier {
 
     return s;
   }
+
+  static const Expr* simplify(const Expr* e) {
+    IRSimplifier simplifier;
+    return simplifier.simplify_inline(e);
+  }
+
+  static Stmt* simplify(Stmt* e) {
+    IRSimplifier simplifier;
+    return simplifier.simplify_inline(e);
+  }
+
+  static ExprHandle simplify(const ExprHandle& e) {
+    IRSimplifier simplifier;
+    return simplifier.simplify_inline(e);
+  }
+
+  SimplifierHashType hash(const Expr* e) {
+    return simplifier.hasher().hash(e);
+  }
+
+  SimplifierHashType hash(const Stmt* e) {
+    return simplifier.hasher().hash(e);
+  }
+
+ protected:
+  PolynomialTransformer simplifier;
+  TermExpander expander;
 };
 
 } // namespace tensorexpr
