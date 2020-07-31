@@ -39,7 +39,7 @@ std::pair<float, float> run_2d_benchmark(
   float milliseconds = 0;
   double total = 0;
   double maxerr = 0;
-  int RUNS = 100;
+  int RUNS = 1000;
 
   // +1 to warm up
   for (int i = 0; i < RUNS + 1; ++i) {

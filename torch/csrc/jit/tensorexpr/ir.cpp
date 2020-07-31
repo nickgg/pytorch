@@ -55,10 +55,10 @@ Load::Load(
     const std::vector<const Expr*>& indices,
     const Expr* mask)
     : ExprNodeBase(dtype), buf_(buf), indices_(indices), mask_(mask) {
-  if (buf->base_handle()->dtype() != kHandle) {
-    throw malformed_input(
-        "Load base handle dtype must be Handle", buf->base_handle());
-  }
+  // if (buf->base_handle()->dtype() != kHandle) {
+  //   throw malformed_input(
+  //       "Load base handle dtype must be Handle", buf->base_handle());
+  // }
 
   if (!indicesValid(indices)) {
     throw malformed_input("invalid indices in Load");
@@ -102,9 +102,9 @@ Store::Store(
     const Expr* value,
     const Expr* mask)
     : buf_(buf), indices_(std::move(indices)), value_(value), mask_(mask) {
-  if (buf->base_handle()->dtype() != kHandle) {
-    throw malformed_input("Store base handle must be Handle");
-  }
+  // if (buf->base_handle()->dtype() != kHandle) {
+  //   throw malformed_input("Store base handle must be Handle");
+  // }
   /*
   TODO: Reenable the checks.
   The reason they are disabled is that kernel.cpp is using Buffers somewhat

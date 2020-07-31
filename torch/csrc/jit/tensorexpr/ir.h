@@ -315,6 +315,9 @@ T immediateAs(const Expr* e) {
 
 template <typename T>
 bool immediateEquals(const Expr* e, T val) {
+  if (!e->isConstant()) {
+    return false;
+  }
 #define TYPE_CASE(Type, Name)                                     \
   if (const Name##Imm* imm = dynamic_cast<const Name##Imm*>(e)) { \
     return imm->value() == val;                                   \
