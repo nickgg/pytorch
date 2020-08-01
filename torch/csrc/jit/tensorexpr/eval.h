@@ -357,6 +357,28 @@ class SimpleIREvaluator : public CodeGen, public IRVisitor {
     return Value(result_v);
   }
 
+  template <typename T>
+  Value compare_select_intermediate(
+      const Value& lhs,
+      const Value& rhs,
+      const Value& retval1,
+      const Value& retval2,
+      CompareSelectOperation cmp_op) {
+    Value value;
+    switch (rhs.dtype().scalar_type()) {
+#define TYPE_CASE(Type, Name)                                               \
+  case ScalarType::Name:                                                    \
+    value = compare_select_op<T, Type>(lhs, rhs, retval1, retval2, cmp_op); \
+    break;
+      AT_FORALL_SCALAR_TYPES_AND2(Bool, Half, TYPE_CASE);
+#undef TYPE_CASE
+      default:
+        throw unsupported_dtype();
+    }
+
+    return value;
+  }
+
   template <typename Op>
   void visit_binary_op(const BinaryOpNode<Op>* v, bool option = false) {
     v->lhs()->accept(this);
@@ -409,7 +431,7 @@ class SimpleIREvaluator : public CodeGen, public IRVisitor {
     switch (lhs_v.dtype().scalar_type()) {
 #define TYPE_CASE(Type, Name)                          \
   case ScalarType::Name:                               \
-    value_ = compare_select_op<Type, int>(             \
+    value_ = compare_select_intermediate<Type>(        \
         lhs_v, rhs_v, ret_val1_v, ret_val2_v, cmp_op); \
     break;
       AT_FORALL_SCALAR_TYPES_AND2(Bool, Half, TYPE_CASE);
