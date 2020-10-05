@@ -312,6 +312,19 @@ namespace jit {
   _(MergeAdjacentBounds)                            \
   _(MergeSymbolicBounds)                            \
   _(MergeSymbolicAdjacent)                          \
+  _(BoundNormalize)                                 \
+  _(BoundOverlap)                                   \
+  _(BoundOverlapStrides)                            \
+  _(BoundOverlapNegativeStrides)                    \
+  _(BoundOverlapSymbolic)                           \
+  _(BoundSubtract)                                  \
+  _(BoundSubtractSymbolic)                          \
+  _(BoundSubtractSymbolicStrides)                   \
+  _(MemDependencyCheckerSimple)                     \
+  _(MemDependencyCheckerLoop)                       \
+  _(MemDependencyCheckerLoopDependents)             \
+  _(MemDependencyCheckerLoopDistinctStrides)        \
+  _(MemDependencyGEMM)                              \
   _(LoopNestComputeAt_1)                            \
   _(LoopNestComputeAt_2)                            \
   _(LoopNestComputeAt_3)                            \

@@ -4,6 +4,7 @@
 #include <torch/csrc/jit/tensorexpr/ir_printer.h>
 #include <torch/csrc/jit/tensorexpr/ir_simplifier.h>
 #include <torch/csrc/jit/tensorexpr/ir_visitor.h>
+#include <torch/csrc/jit/tensorexpr/mem_dependency_checker.h>
 #include <torch/csrc/jit/tensorexpr/stmt.h>
 
 namespace torch {
@@ -123,74 +124,6 @@ void printBoundsInfo(const BoundsInfo& v) {
   std::cerr << "}\n";
 }
 
-bool equalExprs(const Expr* A, const Expr* B) {
-  const Expr* diff = IRSimplifier::simplify(new Sub(B, A));
-  return diff->isConstant() && immediateEquals(diff, 0);
-}
-
-// returns the bounds of an overlapping range, or {nullptr, nullptr} if the
-// ranges don't overlap.
-std::pair<const Expr*, const Expr*> rangeOverlap(
-    const Expr* s1,
-    const Expr* e1,
-    const Expr* s2,
-    const Expr* e2) {
-  // If they're equal they're equal.
-  if (equalExprs(s1, s2) && equalExprs(e1, e2)) {
-    return {s1, e1};
-  }
-
-  std::pair<const Expr*, const Expr*> noOverlap = {nullptr, nullptr};
-  std::pair<const Expr*, const Expr*> overlap = {
-      IRSimplifier::simplify(new Min(s1, s2, true)),
-      IRSimplifier::simplify(new Max(e1, e2, true))};
-
-  const Expr* lowDiff = IRSimplifier::simplify(new Sub(s1, e2));
-  const Expr* highDiff = IRSimplifier::simplify(new Sub(s2, e1));
-  if (lowDiff->isConstant() && highDiff->isConstant()) {
-    // No overlap.
-    if (!(immediateAs<int>(lowDiff) <= 1 || immediateAs<int>(highDiff) >= 1)) {
-      return noOverlap;
-    }
-
-    return overlap;
-  }
-
-  // Can still merge if we can infer adjacency without knowing static values:
-  // If we know one side, we can use the fact that each eX >= sX.
-  if (highDiff->isConstant() && abs(immediateAs<int>(highDiff)) <= 1) {
-    return {s1, e2};
-  }
-
-  if (lowDiff->isConstant() && abs(immediateAs<int>(lowDiff)) <= 1) {
-    return {s2, e1};
-  }
-
-  const Expr* diffs = IRSimplifier::simplify(new Sub(s2, s1));
-  const Expr* diffe = IRSimplifier::simplify(new Sub(e2, e1));
-
-  // If one side fully encloses the other, they're adjacent.
-  if (diffs->isConstant() && diffe->isConstant()) {
-    int ds_i = immediateAs<int>(diffs);
-    int de_i = immediateAs<int>(diffe);
-    if ((ds_i <= 0 && de_i >= 0) || (ds_i >= 0 && de_i <= 0)) {
-      return overlap;
-    }
-  }
-
-  // If either the start or end is 1 element apart from it's pair, they must
-  // be adjacent.
-  if (diffs->isConstant() && abs(immediateAs<int>(diffs)) <= 1) {
-    return overlap;
-  }
-
-  if (diffe->isConstant() && abs(immediateAs<int>(diffe)) <= 1) {
-    return overlap;
-  }
-
-  return noOverlap;
-}
-
 /*
  * Go through the given BoundsInfo vector and merge entries corresponding to
  * the same buf. E.g. given
@@ -230,17 +163,18 @@ BoundsInfo mergeTensorAccesses(const BoundsInfo& unmerged) {
           // The range of the new bound must overlap the existing bound.
           // TODO(nickg): we allow all dimensions to partially overlap,
           // which will overstate the bounds.
-          auto pair = rangeOverlap(
-              new_bound.start[i],
-              new_bound.stop[i],
-              existing_bound.start[i],
-              existing_bound.stop[i]);
-          if (pair.first == nullptr) {
-            fail = true;
-            break;
-          }
-          start.push_back(pair.first);
-          stop.push_back(pair.second);
+          // auto pair = mem_dependency::rangeOverlap(
+          //     new_bound.start[i],
+          //     new_bound.stop[i],
+          //     existing_bound.start[i],
+          //     existing_bound.stop[i],
+          //     true);
+          // if (pair.first == nullptr) {
+          //   fail = true;
+          //   break;
+          // }
+          // start.push_back(pair.first);
+          // stop.push_back(pair.second);
         }
         if (fail) {
           continue;
