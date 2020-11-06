@@ -345,6 +345,7 @@ namespace jit {
   _(MemDependencyCheckerComputeReorder)             \
   _(MemDependencyCheckerComputeReduce)              \
   _(MemDependencyCheckerComputeGEMM)                \
+  _(MemDependencyCheckerDependencyKinds)            \
   _(LoopNestComputeAt_1)                            \
   _(LoopNestComputeAt_2)                            \
   _(LoopNestComputeAt_3)                            \

@@ -394,8 +394,9 @@ void testMemDependencyCheckerSimple() {
   KernelScope kernel_scope;
   BufHandle a("A", {1}, kInt);
   BufHandle b("B", {1}, kInt);
+  using namespace analysis;
 
-  analysis::MemDependencyChecker analyzer;
+  MemDependencyChecker analyzer;
 
   /*
    * A[0] = 3;
@@ -409,10 +410,14 @@ void testMemDependencyCheckerSimple() {
 
   stmt->accept(&analyzer);
 
-  ASSERT_TRUE(analyzer.dependsDirectly(bStore, aStore));
-  ASSERT_FALSE(analyzer.dependsIndirectly(aStore, bStore));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(bStore, aStore));
+  ASSERT_EQ(
+      DependencyKind::NoDependency, analyzer.dependsIndirectly(aStore, bStore));
   // sanity check, but anything that depends directly must depend indirectly.
-  ASSERT_TRUE(analyzer.dependsIndirectly(bStore, aStore));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(bStore, aStore));
 }
 
 // Check that there is a difference between direct and indirect dependence.
@@ -421,8 +426,9 @@ void testMemDependencyCheckerMultiStmt() {
   BufHandle a("A", {1}, kInt);
   BufHandle b("B", {1}, kInt);
   BufHandle c("C", {1}, kInt);
+  using namespace analysis;
 
-  analysis::MemDependencyChecker analyzer;
+  MemDependencyChecker analyzer;
 
   /*
    * A[0] = 3;
@@ -439,17 +445,25 @@ void testMemDependencyCheckerMultiStmt() {
   stmt->accept(&analyzer);
 
   // C depends on A indirectly.
-  ASSERT_FALSE(analyzer.dependsDirectly(cStore, aStore));
-  ASSERT_TRUE(analyzer.dependsIndirectly(cStore, aStore));
+  ASSERT_EQ(
+      DependencyKind::NoDependency, analyzer.dependsDirectly(cStore, aStore));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(cStore, aStore));
 
   // C depends on B directly, which depends on A directly.
-  ASSERT_TRUE(analyzer.dependsDirectly(cStore, bStore));
-  ASSERT_TRUE(analyzer.dependsDirectly(bStore, aStore));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(cStore, bStore));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(bStore, aStore));
 
   // Dependency goes top to bottom only.
-  ASSERT_FALSE(analyzer.dependsIndirectly(bStore, cStore));
-  ASSERT_FALSE(analyzer.dependsIndirectly(aStore, bStore));
-  ASSERT_FALSE(analyzer.dependsIndirectly(aStore, cStore));
+  ASSERT_EQ(
+      DependencyKind::NoDependency, analyzer.dependsIndirectly(bStore, cStore));
+  ASSERT_EQ(
+      DependencyKind::NoDependency, analyzer.dependsIndirectly(aStore, bStore));
+  ASSERT_EQ(
+      DependencyKind::NoDependency, analyzer.dependsIndirectly(aStore, cStore));
 }
 
 // Verify that we do filter writes that are totally overlapped by later writes.
@@ -457,8 +471,9 @@ void testMemDependencyCheckerOverlap() {
   KernelScope kernel_scope;
   BufHandle a("A", {1}, kInt);
   BufHandle b("B", {1}, kInt);
+  using namespace analysis;
 
-  analysis::MemDependencyChecker analyzer;
+  MemDependencyChecker analyzer;
 
   /*
    * A[0] = 3;
@@ -476,12 +491,19 @@ void testMemDependencyCheckerOverlap() {
 
   // B store depends on second A store but not first since it is completely
   // overlapped.
-  ASSERT_TRUE(analyzer.dependsIndirectly(bStore, a2Store));
-  ASSERT_FALSE(analyzer.dependsIndirectly(bStore, aStore));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(bStore, a2Store));
+  ASSERT_EQ(
+      DependencyKind::NoDependency, analyzer.dependsIndirectly(bStore, aStore));
 
   // No dependency between either A store.
-  ASSERT_FALSE(analyzer.dependsIndirectly(aStore, a2Store));
-  ASSERT_FALSE(analyzer.dependsIndirectly(a2Store, aStore));
+  ASSERT_EQ(
+      DependencyKind::NoDependency,
+      analyzer.dependsIndirectly(aStore, a2Store));
+  ASSERT_EQ(
+      DependencyKind::NoDependency,
+      analyzer.dependsIndirectly(a2Store, aStore));
 }
 
 // Verify that bounds match loop iterations, and that dependencies progress
@@ -512,12 +534,15 @@ void testMemDependencyCheckerLoop() {
   stmt->accept(&analyzer);
 
   // Same A->B dependency.
-  ASSERT_TRUE(analyzer.dependsDirectly(bStore, aStore));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(bStore, aStore));
 
   // B depends on the loop.
-  ASSERT_TRUE(analyzer.dependsDirectly(bStore, loop));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(bStore, loop));
   // A is in the loop but does not depend on any loop iteration.
-  ASSERT_FALSE(analyzer.dependsIndirectly(aStore, loop));
+  ASSERT_NE(
+      DependencyKind::ReadAfterWrite, analyzer.dependsIndirectly(aStore, loop));
 
   auto aStoreAccess = analyzer.accessFor(aStore);
   ASSERT_NE(aStoreAccess, nullptr);
@@ -558,22 +583,31 @@ void testMemDependencyCheckerLoopReduce() {
   stmt->accept(&analyzer);
 
   // B -> A.
-  ASSERT_TRUE(analyzer.dependsDirectly(bStore, aReduce));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsDirectly(bStore, aReduce));
 
   // B depends indirectly on the intializer of A, since the reduction depends
   // on it.
-  ASSERT_FALSE(analyzer.dependsDirectly(bStore, aInit));
-  ASSERT_TRUE(analyzer.dependsIndirectly(bStore, aInit));
+  ASSERT_EQ(
+      DependencyKind::NoDependency, analyzer.dependsDirectly(bStore, aInit));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(bStore, aInit));
 
-  ASSERT_TRUE(analyzer.dependsDirectly(aReduce, aInit));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(aReduce, aInit));
 
   // B depends on the loop.
-  ASSERT_TRUE(analyzer.dependsDirectly(bStore, loop));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(bStore, loop));
   // A is in the loop and depends on other iterations.
-  ASSERT_TRUE(analyzer.dependsDirectly(aReduce, loop));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(aReduce, loop));
 
   // The loop contents depend on the initializer too.
-  ASSERT_TRUE(analyzer.dependsDirectly(loop, aInit));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(loop, aInit));
 
   // Pull out the access for the load inside the loop.
   auto loopLoad = analyzer.accessFor(reduce.node());
@@ -612,22 +646,31 @@ void testMemDependencyCheckerLoopReduceExpanded() {
   stmt->accept(&analyzer);
 
   // B -> A.
-  ASSERT_TRUE(analyzer.dependsDirectly(bStore, aReduce));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsDirectly(bStore, aReduce));
 
   // B depends indirectly on the intializer of A, since the reduction depends
   // on it.
-  ASSERT_FALSE(analyzer.dependsDirectly(bStore, aInit));
-  ASSERT_TRUE(analyzer.dependsIndirectly(bStore, aInit));
+  ASSERT_EQ(
+      DependencyKind::NoDependency, analyzer.dependsDirectly(bStore, aInit));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(bStore, aInit));
 
-  ASSERT_TRUE(analyzer.dependsDirectly(aReduce, aInit));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(aReduce, aInit));
 
   // B depends on the loop.
-  ASSERT_TRUE(analyzer.dependsDirectly(bStore, loop));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(bStore, loop));
   // A is in the loop and depends on other iterations.
-  ASSERT_TRUE(analyzer.dependsDirectly(aReduce, loop));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(aReduce, loop));
 
   // The loop contents depend on the initializer too.
-  ASSERT_TRUE(analyzer.dependsDirectly(loop, aInit));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(loop, aInit));
 
   // Pull out the access for the store inside the loop.
   auto loopLoad = analyzer.accessFor(aLoad.node());
@@ -642,9 +685,10 @@ void testMemDependencyCheckerInputsOutputs() {
   BufHandle a("A", {10}, kInt);
   BufHandle b("B", {10}, kInt);
   VarHandle x("x", kInt);
+  using namespace analysis;
 
   // initialize analyzer with inputs and outputs.
-  analysis::MemDependencyChecker analyzer({a}, {b});
+  MemDependencyChecker analyzer({a}, {b});
 
   // Here's a Relu.
   /*
@@ -662,31 +706,47 @@ void testMemDependencyCheckerInputsOutputs() {
   stmt->accept(&analyzer);
 
   // Output depends indirectly on input.
-  ASSERT_TRUE(analyzer.dependsIndirectly(b.node(), a.node()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(b.node(), a.node()));
   // aLoad depends directly on the input A.
-  ASSERT_TRUE(analyzer.dependsDirectly(aLoad.node(), a.node()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsDirectly(aLoad.node(), a.node()));
   // bStore therefore depends directly on the input A.
-  ASSERT_TRUE(analyzer.dependsDirectly(bStore, a.node()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsDirectly(bStore, a.node()));
   // The output depends directly on the store.
-  ASSERT_TRUE(analyzer.dependsDirectly(b.node(), bStore));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsDirectly(b.node(), bStore));
 
   // Check AccessInfo based overloads.
   auto input = analyzer.input(a.node());
   auto output = analyzer.output(b.node());
 
   // Output depends indirectly on input.
-  ASSERT_TRUE(analyzer.dependsIndirectly(output, input));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(output, input));
   // Not directly.
-  ASSERT_FALSE(analyzer.dependsDirectly(output, input));
+  ASSERT_EQ(
+      DependencyKind::NoDependency, analyzer.dependsDirectly(output, input));
   // Not in reverse order.
-  ASSERT_FALSE(analyzer.dependsIndirectly(input, output));
+  ASSERT_EQ(
+      DependencyKind::NoDependency, analyzer.dependsIndirectly(input, output));
 
   // output -> bStore -> bLoad -> input.
   auto storeAccess = analyzer.accessFor(bStore);
   auto loadAccess = analyzer.accessFor(aLoad.node());
 
-  ASSERT_TRUE(analyzer.dependsDirectly(output, storeAccess));
-  ASSERT_TRUE(analyzer.dependsDirectly(loadAccess, input));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsDirectly(output, storeAccess));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsDirectly(loadAccess, input));
 }
 
 // Can tell if an output does not depend on an input.
@@ -695,9 +755,10 @@ void testMemDependencyCheckerOutputDoesntDepend() {
   BufHandle a("A", {10}, kInt);
   BufHandle b("B", {10}, kInt);
   VarHandle x("x", kInt);
+  using namespace analysis;
 
   // initialize analyzer with inputs and outputs.
-  analysis::MemDependencyChecker analyzer({a}, {b});
+  MemDependencyChecker analyzer({a}, {b});
 
   // Here's a dumb Relu.
   /*
@@ -714,17 +775,22 @@ void testMemDependencyCheckerOutputDoesntDepend() {
   stmt->accept(&analyzer);
 
   // Output does not depend indirectly on input.
-  ASSERT_FALSE(analyzer.dependsIndirectly(b.node(), a.node()));
+  ASSERT_EQ(
+      DependencyKind::NoDependency,
+      analyzer.dependsIndirectly(b.node(), a.node()));
 
   // The output still depends directly on the store.
-  ASSERT_TRUE(analyzer.dependsDirectly(b.node(), bStore));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsDirectly(b.node(), bStore));
 
   // Check AccessInfo based overloads.
   auto input = analyzer.input(a.node());
   auto output = analyzer.output(b.node());
 
   // Output does not depend indirectly on input.
-  ASSERT_FALSE(analyzer.dependsIndirectly(output, input));
+  ASSERT_EQ(
+      DependencyKind::NoDependency, analyzer.dependsIndirectly(output, input));
 }
 
 // Verify different loop extents produce accesses with different bounds, and
@@ -776,17 +842,25 @@ void testMemDependencyCheckerLoopBounds() {
   auto output = analyzer.output(c.node());
 
   // sanity check Output -> Input.
-  ASSERT_TRUE(analyzer.dependsIndirectly(output, input));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(output, input));
 
   // Check the For loop dependencies:
 
   // Last write to C depends on both writes to B since they contain the last
   // write to at least one element.
-  ASSERT_TRUE(analyzer.dependsIndirectly(stmts[3], stmts[1]));
-  ASSERT_TRUE(analyzer.dependsIndirectly(stmts[3], stmts[0]));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(stmts[3], stmts[1]));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(stmts[3], stmts[0]));
 
   // The last write to C does not depend on the other write to C.
-  ASSERT_FALSE(analyzer.dependsIndirectly(stmts[3], stmts[2]));
+  ASSERT_EQ(
+      DependencyKind::NoDependency,
+      analyzer.dependsIndirectly(stmts[3], stmts[2]));
 
   auto CB = [](int s, int e) { return Bound(new IntImm(s), new IntImm(e)); };
   auto EQ = [](const IndexBounds& x, const IndexBounds& y) {
@@ -966,7 +1040,9 @@ void testMemDependencyCheckerLoopBoundsIndexShift() {
   stmt->accept(&analyzer);
 
   // Sanity check output depends on Input.
-  ASSERT_TRUE(analyzer.dependsIndirectly(b.node(), a.node()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(b.node(), a.node()));
 
   auto CB = [](int s, int e) { return Bound(new IntImm(s), new IntImm(e)); };
   auto EQ = [](const IndexBounds& x, const IndexBounds& y) {
@@ -1112,7 +1188,7 @@ void testMemDependencyCheckerLoopSelfDependency() {
   // This check assumes that the Stmt has a single Store with a single Load on
   // the RHS.
   auto isSelfDependent =
-      [](const std::deque<std::shared_ptr<AccessInfo>>& history) -> bool {
+      [](const std::vector<std::shared_ptr<AccessInfo>>& history) -> bool {
     return history.front()->hasDependency(history.back());
   };
 
@@ -1767,7 +1843,9 @@ void testMemDependencyCheckerLoopDistinctStrides() {
   stmt->accept(&analyzer);
 
   // Sanity check output depends on input.
-  ASSERT_TRUE(analyzer.dependsIndirectly(b.node(), a.node()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(b.node(), a.node()));
 
   // Output has 2 dependencies... the store in each loop.
   auto outputAccess = analyzer.output(b.node());
@@ -1845,8 +1923,12 @@ void testMemDependencyCheckerLoopBoundsCond() {
     ASSERT_EQ(outputAccess->dependencies().size(), 3);
 
     // C depends indirectly on A and B.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), b.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), b.node()));
   }
 
   {
@@ -1891,8 +1973,12 @@ void testMemDependencyCheckerLoopBoundsCond() {
     // do that yet.
 
     // C depends indirectly on A and B.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), b.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), b.node()));
   }
 
   {
@@ -1928,8 +2014,12 @@ void testMemDependencyCheckerLoopBoundsCond() {
     ASSERT_EQ(outputAccess->dependencies().size(), 2);
 
     // C depends indirectly on A and B.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), b.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), b.node()));
   }
 
   {
@@ -1967,8 +2057,12 @@ void testMemDependencyCheckerLoopBoundsCond() {
     ASSERT_EQ(outputAccess->dependencies().size(), 2);
 
     // C depends indirectly on A and B.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), b.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), b.node()));
   }
 
   {
@@ -1995,11 +2089,19 @@ void testMemDependencyCheckerLoopBoundsCond() {
 
     stmt->accept(&analyzer);
 
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
 
-    ASSERT_TRUE(analyzer.dependsDirectly(conditionalLoad.node(), initStore));
-    ASSERT_FALSE(analyzer.dependsDirectly(conditionalLoad.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(conditionalLoad.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsDirectly(conditionalLoad.node(), initStore));
+    ASSERT_EQ(
+        DependencyKind::NoDependency,
+        analyzer.dependsDirectly(conditionalLoad.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(conditionalLoad.node(), a.node()));
   }
 }
 
@@ -2050,8 +2152,12 @@ void testMemDependencyCheckerIfThenElse() {
     ASSERT_EQ(ifStoreAccess->dependencies().size(), 2);
 
     // C depends indirectly on A and B.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), b.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), b.node()));
   }
 
   {
@@ -2080,8 +2186,12 @@ void testMemDependencyCheckerIfThenElse() {
     stmt->accept(&analyzer);
 
     // C depends indirectly on A and B.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), b.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), b.node()));
   }
 
   {
@@ -2111,8 +2221,12 @@ void testMemDependencyCheckerIfThenElse() {
     stmt->accept(&analyzer);
 
     // C depends indirectly on A and B.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), b.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), b.node()));
   }
 }
 
@@ -2142,7 +2256,9 @@ void testMemDependencyCheckerCutLoop() {
     stmt->accept(&analyzer);
 
     // Output depends on input.
-    ASSERT_TRUE(analyzer.dependsIndirectly(b.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(b.node(), a.node()));
 
     // Output has 2 depdenencies.
     auto outputAccess = analyzer.output(b.node());
@@ -2181,7 +2297,9 @@ void testMemDependencyCheckerCutLoop() {
     stmt->accept(&analyzer);
 
     // Output depends on input.
-    ASSERT_TRUE(analyzer.dependsIndirectly(b.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(b.node(), a.node()));
 
     // Output has 4 depdenencies.
     auto outputAccess = analyzer.output(b.node());
@@ -2189,11 +2307,17 @@ void testMemDependencyCheckerCutLoop() {
     ASSERT_EQ(outputAccess->dependencies().size(), 4);
 
     // Second loop depends on first loop.
-    ASSERT_TRUE(analyzer.dependsDirectly(secondLoop, firstLoop));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsDirectly(secondLoop, firstLoop));
 
     // Output does not depend on second loop or store.
-    ASSERT_FALSE(analyzer.dependsIndirectly(b.node(), secondLoop));
-    ASSERT_FALSE(analyzer.dependsIndirectly(b.node(), secondStore));
+    ASSERT_EQ(
+        DependencyKind::NoDependency,
+        analyzer.dependsIndirectly(b.node(), secondLoop));
+    ASSERT_EQ(
+        DependencyKind::NoDependency,
+        analyzer.dependsIndirectly(b.node(), secondStore));
   }
 }
 
@@ -2238,9 +2362,13 @@ void testMemDependencyCheckerDynamicShapes() {
      */
 
     // Output dependent on A input.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
     // Also dependent on B input to determine the size of the region written.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), b.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), b.node()));
 
     auto history = analyzer.getHistory();
     ASSERT_EQ(history.size(), 6);
@@ -2280,8 +2408,12 @@ void testMemDependencyCheckerDynamicShapes() {
      */
 
     // Sanity check output depends on input.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), b.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), b.node()));
 
     auto history = analyzer.getHistory();
     ASSERT_EQ(history.size(), 7);
@@ -2324,8 +2456,12 @@ void testMemDependencyCheckerDynamicShapes() {
      */
 
     // Sanity check output depends on input.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), b.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), b.node()));
 
     auto history = analyzer.getHistory();
     ASSERT_EQ(history.size(), 6);
@@ -2371,8 +2507,12 @@ void testMemDependencyCheckerDynamicShapes() {
      *  5. Output: C[(0, 99)] - depends on: 4
      */
     // Sanity check output depends on input.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), b.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), b.node()));
 
     auto history = analyzer.getHistory();
     ASSERT_EQ(history.size(), 6);
@@ -2419,8 +2559,12 @@ void testMemDependencyCheckerDynamicShapes() {
      */
 
     // Sanity check output depends on input.
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(c.node(), b.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(c.node(), b.node()));
 
     auto history = analyzer.getHistory();
     ASSERT_EQ(history.size(), 6);
@@ -2501,7 +2645,9 @@ void testMemDependencyCheckerMultiDim() {
     stmt->accept(&analyzer);
 
     // Sanity test: Output depends on input.
-    ASSERT_TRUE(analyzer.dependsIndirectly(b.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(b.node(), a.node()));
 
     // 4 accesses: input, load, store, output.
     auto history = analyzer.getHistory();
@@ -2547,7 +2693,9 @@ void testMemDependencyCheckerMultiDim() {
     stmt->accept(&analyzer);
 
     // Sanity test: Output depends on input.
-    ASSERT_TRUE(analyzer.dependsIndirectly(b.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(b.node(), a.node()));
 
     // 4 accesses: input, load, store, output.
     auto history = analyzer.getHistory();
@@ -2586,7 +2734,9 @@ void testMemDependencyCheckerMultiDim() {
     stmt->accept(&analyzer);
 
     // Sanity test: Output depends on input.
-    ASSERT_TRUE(analyzer.dependsIndirectly(b.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(b.node(), a.node()));
 
     // 4 accesses: input, load, store, output.
     auto history = analyzer.getHistory();
@@ -2639,8 +2789,12 @@ void testMemDependencyCheckerMultiDim() {
     stmt->accept(&analyzer);
 
     // Sanity test: Output depends on both inputs.
-    ASSERT_TRUE(analyzer.dependsIndirectly(b.node(), a.node()));
-    ASSERT_TRUE(analyzer.dependsIndirectly(b.node(), c.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(b.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(b.node(), c.node()));
 
     // 6 accesses: 2 inputs, 2 loads, store, output.
     auto history = analyzer.getHistory();
@@ -2700,7 +2854,9 @@ void testMemDependencyCheckerMultiDim() {
     stmt->accept(&analyzer);
 
     // Sanity test: Output depends on input.
-    ASSERT_TRUE(analyzer.dependsIndirectly(b.node(), a.node()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsIndirectly(b.node(), a.node()));
 
     // 4 accesses: input, 2 loads, store, output.
     auto history = analyzer.getHistory();
@@ -2768,13 +2924,18 @@ void testMemDependencyCheckerComputeAPI() {
   l.root_stmt()->accept(&analyzer);
 
   // Sanity test: Output depends on input.
-  ASSERT_TRUE(analyzer.dependsIndirectly(d->buf(), a_buf.data()));
-  ASSERT_TRUE(analyzer.dependsIndirectly(d->buf(), b_buf.data()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(d->buf(), a_buf.data()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(d->buf(), b_buf.data()));
 
   // Second loop depends on first loop.
   auto* c_loop = l.getLoopStmtsFor(c)[0];
   auto* d_loop = l.getLoopStmtsFor(d)[0];
-  ASSERT_TRUE(analyzer.dependsDirectly(d_loop, c_loop));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(d_loop, c_loop));
 }
 
 void testMemDependencyCheckerComputeInline() {
@@ -2815,8 +2976,12 @@ void testMemDependencyCheckerComputeInline() {
   l.root_stmt()->accept(&analyzer);
 
   // Sanity test: Output depends on input.
-  ASSERT_TRUE(analyzer.dependsIndirectly(d->buf(), a_buf.data()));
-  ASSERT_TRUE(analyzer.dependsIndirectly(d->buf(), b_buf.data()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(d->buf(), a_buf.data()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(d->buf(), b_buf.data()));
 
   // broadcast_add tensor should not appear in trace at all.
   for (auto& wi : analyzer.getHistory()) {
@@ -2965,18 +3130,27 @@ void testMemDependencyCheckerComputeReduce() {
   l.root_stmt()->accept(&analyzer);
 
   // Sanity test: Output depends on input.
-  ASSERT_TRUE(analyzer.dependsIndirectly(d->buf(), a.data()));
-  ASSERT_TRUE(analyzer.dependsIndirectly(d->buf(), b.data()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(d->buf(), a.data()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(d->buf(), b.data()));
 
   // Second loop depends on first loop.
   auto* c_loop = l.getLoopStmtsFor(c)[0];
   auto* d_loop = l.getLoopStmtsFor(d)[0];
-  ASSERT_TRUE(analyzer.dependsDirectly(d_loop, c_loop));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite, analyzer.dependsDirectly(d_loop, c_loop));
 
   // Reduction depends on both inputs.
   auto reduces = NodeFinder<ReduceOp>::find(l.root_stmt());
-  ASSERT_TRUE(analyzer.dependsIndirectly(reduces[0], a.data()));
-  ASSERT_TRUE(analyzer.dependsIndirectly(reduces[0], b.data()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(reduces[0], a.data()));
+  ASSERT_EQ(
+      DependencyKind::ReadAfterWrite,
+      analyzer.dependsIndirectly(reduces[0], b.data()));
 }
 
 void testMemDependencyCheckerComputeGEMM() {
@@ -3053,8 +3227,12 @@ void testMemDependencyCheckerComputeGEMM() {
     stmt->accept(&analyzer_unlowered);
 
     // Outputs depend on inputs.
-    ASSERT_TRUE(analyzer_unlowered.dependsIndirectly(CT->buf(), AP.data()));
-    ASSERT_TRUE(analyzer_unlowered.dependsIndirectly(CT->buf(), BP.data()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer_unlowered.dependsIndirectly(CT->buf(), AP.data()));
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer_unlowered.dependsIndirectly(CT->buf(), BP.data()));
 
     // The last write to gemm should cover the total bound of the output.
     std::shared_ptr<AccessInfo> outputAccess =
@@ -3138,6 +3316,47 @@ void testMemDependencyCheckerComputeGEMM() {
         ASSERT_TRUE(exprEquals(flat_bounds, after_bounds));
       }
     }
+  }
+}
+
+void testMemDependencyCheckerDependencyKinds() {
+  KernelScope kernel_scope;
+  BufHandle a("A", {5}, kInt);
+  BufHandle b("B", {5}, kInt);
+  VarHandle x("x", kInt);
+  VarHandle y("y", kInt);
+
+  using namespace analysis;
+
+  {
+    /*
+     * A[0] = B[0];
+     * B[0] = 3;      WAR on B
+     * A[0] = B[0];   WAW on A, RAW on B
+     */
+
+    MemDependencyChecker analyzer;
+    Store* store1 = Store::make(a, {0}, Load::make(b, {0}, 1), 1);
+    Store* store2 = Store::make(b, {0}, 3, 1);
+    Store* store3 = Store::make(a, {0}, Load::make(b, {0}, 1), 1);
+    Stmt* stmt = Block::make({store1, store2, store3});
+
+    stmt->accept(&analyzer);
+    std::cout << (int)analyzer.dependsDirectly(store2, store1) << "\n";
+    std::cout << (int)analyzer.dependsDirectly(store3, store2) << "\n";
+    std::cout << (int)analyzer.dependsDirectly(store3, store1) << "\n";
+
+    ASSERT_EQ(
+        DependencyKind::WriteAfterRead,
+        analyzer.dependsDirectly(store2, store1));
+
+    ASSERT_EQ(
+        DependencyKind::ReadAfterWrite,
+        analyzer.dependsDirectly(store3, store2));
+
+    ASSERT_EQ(
+        DependencyKind::WriteAfterWrite,
+        analyzer.dependsDirectly(store3, store1));
   }
 }
 

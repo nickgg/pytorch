@@ -1,7 +1,6 @@
 #pragma once
 #include <c10/core/ScalarType.h>
 #include <torch/csrc/WindowsTorchApiMacro.h>
-#include <deque>
 #include <vector>
 
 #include <torch/csrc/jit/tensorexpr/bounds_overlap.h>
@@ -14,6 +13,14 @@ namespace torch {
 namespace jit {
 namespace tensorexpr {
 namespace analysis {
+
+// The kind of dependency found, in increasing order of exlusivity.
+enum class DependencyKind {
+  NoDependency,
+  WriteAfterWrite,
+  WriteAfterRead,
+  ReadAfterWrite,
+};
 
 enum class AccessType { Input, Output, Load, Store, Call, AtomicAdd };
 const char* AccessToString(AccessType a);
@@ -185,52 +192,61 @@ class TORCH_API MemDependencyChecker : public IRVisitor {
   // about it.
 
   // Returns true if any read in A has a direct dependence on a write in B.
-  bool dependsDirectly(const Stmt* A, const Stmt* B);
-  bool dependsDirectly(const Expr* A, const Stmt* B);
+  DependencyKind dependsDirectly(const Stmt* A, const Stmt* B);
+  DependencyKind dependsDirectly(const Expr* A, const Stmt* B);
 
   // Returns true of the output depends directly on a write contained in B.
-  bool dependsDirectly(const Buf* output, const Stmt* B);
+  DependencyKind dependsDirectly(const Buf* output, const Stmt* B);
 
   // Returns true if a read in A depends directly on the provided input.
-  bool dependsDirectly(const Stmt* A, const Buf* input);
-  bool dependsDirectly(const Expr* A, const Buf* input);
+  DependencyKind dependsDirectly(const Stmt* A, const Buf* input);
+  DependencyKind dependsDirectly(const Expr* A, const Buf* input);
 
   // Outputs/inputs cannot depend directly.
 
   // Returns true if the access A has B as an immediate dependency.
-  bool dependsDirectly(
+  DependencyKind dependsDirectly(
       const std::shared_ptr<AccessInfo>& A,
       const std::shared_ptr<AccessInfo>& B);
 
   // Returns true if any read in A has an ancestor write contained in B.
-  bool dependsIndirectly(const Stmt* A, const Stmt* B);
-  bool dependsIndirectly(const Expr* A, const Stmt* B);
+  DependencyKind dependsIndirectly(const Stmt* A, const Stmt* B);
+  DependencyKind dependsIndirectly(const Expr* A, const Stmt* B);
 
   // Returns true of the output depends indirectly on a write contained in B.
-  bool dependsIndirectly(const Buf* output, const Stmt* B);
+  DependencyKind dependsIndirectly(const Buf* output, const Stmt* B);
 
   // Returns true if a read in A depends indirectly on the provided input.
-  bool dependsIndirectly(const Stmt* A, const Buf* input);
-  bool dependsIndirectly(const Expr* A, const Buf* input);
+  DependencyKind dependsIndirectly(const Stmt* A, const Buf* input);
+  DependencyKind dependsIndirectly(const Expr* A, const Buf* input);
 
   // returns true if the output uses any load of the input.
-  bool dependsIndirectly(const Buf* output, const Buf* input);
+  DependencyKind dependsIndirectly(const Buf* output, const Buf* input);
 
   // Returns true if the access A has a dependency chain to access B.
-  bool dependsIndirectly(
+  DependencyKind dependsIndirectly(
       const std::shared_ptr<AccessInfo>& A,
       const std::shared_ptr<AccessInfo>& B);
 
-  // Retuns the AccessInfo
+  // Returns the AccessInfo
   std::shared_ptr<AccessInfo> accessFor(const Stmt* A) const;
   std::shared_ptr<AccessInfo> accessFor(const Expr* A) const;
+
+  // Returns all AccessInfos.
+  std::unordered_set<std::shared_ptr<AccessInfo>> accessesWithin(
+      const Stmt* A) const;
+  // TODO: this will return only the AccessInfo for A. It's included for
+  // completeness but be aware it wont return accesses used in the computation
+  // of A.
+  std::unordered_set<std::shared_ptr<AccessInfo>> accessesWithin(
+      const Expr* A) const;
 
   // Accesses relating to input and output buffers.
   std::shared_ptr<AccessInfo> input(const Buf* B) const;
   std::shared_ptr<AccessInfo> output(const Buf* B) const;
 
   // Returns the full history of reads and writes.
-  const std::deque<std::shared_ptr<AccessInfo>>& getHistory() const;
+  const std::vector<std::shared_ptr<AccessInfo>>& getHistory() const;
 
   // Dumps the dependency graph in DOT format.
   void dumpDAG(const std::string& filename) const;
@@ -273,7 +289,7 @@ class TORCH_API MemDependencyChecker : public IRVisitor {
     std::unordered_map<const Var*, Bound> shadowedVarBounds;
     std::unordered_set<const Var*> localVars;
 
-    std::deque<std::shared_ptr<AccessInfo>> accesses_;
+    std::vector<std::shared_ptr<AccessInfo>> accesses_;
 
     std::unordered_map<const Var*, std::list<BoundRelationship>> openWrites_;
   };
@@ -285,84 +301,82 @@ class TORCH_API MemDependencyChecker : public IRVisitor {
       stmtToAccess_;
   std::unordered_multimap<const Expr*, std::shared_ptr<AccessInfo>>
       exprToAccess_;
+  std::unordered_map<const Stmt*, std::vector<std::shared_ptr<AccessInfo>>>
+      scopeToAccesses_;
 
   VarBoundMap knownVarBounds_;
 
-  // Finds all accesses that are reads within the scope of v.
-  template <typename StmtOrExpr>
-  DependencySet getAllReadsWithin(const StmtOrExpr* v) {
-    DependencySet reads;
-    auto insertAllReads = [&](const auto& nodes) {
-      for (auto* l : nodes) {
-        auto bound = exprToAccess_.equal_range(l);
-        for (auto it = bound.first; it != bound.second; ++it) {
-          if (it->second->isRead()) {
-            reads.insert(it->second);
-          }
-        }
-      }
-    };
-
-    // Look for and insert accesses belonging to all nodes that act like reads.
-    insertAllReads(NodeFinder<Load>::find(v));
-    insertAllReads(NodeFinder<FunctionCall>::find(v));
-    insertAllReads(NodeFinder<ReduceOp>::find(v));
-
-    return reads;
-  }
-
-  // Finds all accesses that are writes within the scope of v.
-  // Writes cannot occur in Exprs, so this is a little simpler.
-  DependencySet getAllWritesWithin(const Stmt* v) {
-    DependencySet writes;
-
-    // writes just Store currently.
-    auto stores = NodeFinder<Store>::find(v);
-    for (auto* s : stores) {
-      auto bound = stmtToAccess_.equal_range(s);
-      for (auto it = bound.first; it != bound.second; ++it) {
-        if (it->second->isWrite()) {
-          writes.insert(it->second);
-        }
-      }
+  DependencyKind upgradeDependencyKind(
+      DependencyKind before,
+      bool aWrite,
+      bool bWrite) {
+    // If it's already RAW, or this update is RAW, return RAW.
+    if (before == DependencyKind::ReadAfterWrite || (!aWrite && bWrite)) {
+      return DependencyKind::ReadAfterWrite;
     }
-    return writes;
+
+    if (before == DependencyKind::WriteAfterRead || (aWrite && !bWrite)) {
+      return DependencyKind::WriteAfterRead;
+    }
+
+    if (before == DependencyKind::WriteAfterWrite || (aWrite && bWrite)) {
+      return DependencyKind::WriteAfterWrite;
+    }
+
+    return DependencyKind::NoDependency;
   }
 
   // Templated helpers to work on either Exprs or Stmts.
   template <typename StmtOrExpr>
-  bool dependsDirectlyHelper(const StmtOrExpr* A, const Stmt* B) {
-    auto aReads = getAllReadsWithin(A);
-    auto bWrites = getAllWritesWithin(B);
+  DependencyKind dependsDirectlyHelper(const StmtOrExpr* A, const Stmt* B) {
+    auto aAccesses = accessesWithin(A);
+    auto bAccesses = accessesWithin(B);
 
-    for (auto& read : aReads) {
-      for (auto& depPair : read->dependencies()) {
-        if (bWrites.count(depPair.second) != 0) {
-          return true;
+    DependencyKind kind = DependencyKind::NoDependency;
+
+    for (auto& aA : aAccesses) {
+      for (auto& depPair : aA->dependencies()) {
+        auto it = bAccesses.find(depPair.second);
+        if (it != bAccesses.end()) {
+          kind = upgradeDependencyKind(kind, aA->isWrite(), (*it)->isWrite());
+
+          // if it's RAW, just return it it won't change.
+          if (kind == DependencyKind::ReadAfterWrite) {
+            return kind;
+          }
         }
       }
     }
 
-    return false;
+    return kind;
   }
 
   template <typename StmtOrExpr>
-  bool dependsIndirectlyHelper(const StmtOrExpr* A, const Stmt* B) {
-    auto aReads = getAllReadsWithin(A);
-    auto bWrites = getAllWritesWithin(B);
+  DependencyKind dependsIndirectlyHelper(const StmtOrExpr* A, const Stmt* B) {
+    auto aAccesses = accessesWithin(A);
+    auto bAccesses = accessesWithin(B);
 
-    auto aDeps = getAllWriteDependencies(aReads);
+    DependencyKind kind = DependencyKind::NoDependency;
 
-    for (auto& dependency : aDeps) {
-      if (bWrites.count(dependency) != 0) {
-        return true;
+    for (auto& aA : aAccesses) {
+      DependencySet aDependencies;
+      getDependencyChain(aA, aDependencies);
+
+      for (auto& dependency : aDependencies) {
+        auto it = bAccesses.find(dependency);
+        if (it != bAccesses.end()) {
+          kind = upgradeDependencyKind(kind, aA->isWrite(), (*it)->isWrite());
+
+          // if it's RAW, just return it it won't change.
+          if (kind == DependencyKind::ReadAfterWrite) {
+            return kind;
+          }
+        }
       }
     }
 
-    return false;
+    return kind;
   }
-
-  DependencySet getAllWriteDependencies(const DependencySet& products);
 
   // Maps for inputs and outputs, since they aren't present directly in the IR.
   std::unordered_map<const Buf*, std::shared_ptr<AccessInfo>> inputs_;

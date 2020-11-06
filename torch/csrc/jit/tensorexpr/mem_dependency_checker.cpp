@@ -276,7 +276,7 @@ bool MemDependencyChecker::allowLoopExecutionOrderAnalysis(bool allow) {
   return allow;
 }
 
-const std::deque<std::shared_ptr<AccessInfo>>& MemDependencyChecker::
+const std::vector<std::shared_ptr<AccessInfo>>& MemDependencyChecker::
     getHistory() const {
   return currentScope_->accesses_;
 }
@@ -294,139 +294,205 @@ void MemDependencyChecker::dumpDAG(const std::string& filename) const {
 
 // dependsDirectly, dependsIndirectly and friends:
 
-DependencySet MemDependencyChecker::getAllWriteDependencies(
-    const DependencySet& products) {
-  DependencySet writes;
+DependencyKind MemDependencyChecker::dependsDirectly(
+    const Expr* A,
+    const Stmt* B) {
+  return dependsDirectlyHelper(A, B);
+}
 
-  for (auto& info : products) {
-    DependencySet dependencies;
-    getDependencyChain(info, dependencies);
-    for (auto& other : dependencies) {
-      if (other->isWrite()) {
-        writes.insert(other);
+DependencyKind MemDependencyChecker::dependsDirectly(
+    const Stmt* A,
+    const Stmt* B) {
+  return dependsDirectlyHelper(A, B);
+}
+
+DependencyKind MemDependencyChecker::dependsDirectly(
+    const Buf* O,
+    const Stmt* B) {
+  auto outputAccess = output(O);
+  auto bAccesses = accessesWithin(B);
+
+  DependencyKind kind = DependencyKind::NoDependency;
+  for (auto& depPair : outputAccess->dependencies()) {
+    auto it = bAccesses.find(depPair.second);
+    if (it != bAccesses.end()) {
+      kind = upgradeDependencyKind(kind, false, (*it)->isWrite());
+
+      // if it's RAW, just return it it won't change.
+      if (kind == DependencyKind::ReadAfterWrite) {
+        return kind;
       }
     }
   }
 
-  return writes;
+  return kind;
 }
 
-bool MemDependencyChecker::dependsDirectly(const Expr* A, const Stmt* B) {
-  return dependsDirectlyHelper(A, B);
-}
-
-bool MemDependencyChecker::dependsDirectly(const Stmt* A, const Stmt* B) {
-  return dependsDirectlyHelper(A, B);
-}
-
-bool MemDependencyChecker::dependsDirectly(const Buf* O, const Stmt* B) {
-  auto outputAccess = output(O);
-  auto bWrites = getAllWritesWithin(B);
-
-  for (auto& depPair : outputAccess->dependencies()) {
-    if (bWrites.count(depPair.second) != 0) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-bool MemDependencyChecker::dependsDirectly(const Stmt* A, const Buf* I) {
-  auto aReads = getAllReadsWithin(A);
+DependencyKind MemDependencyChecker::dependsDirectly(
+    const Stmt* A,
+    const Buf* I) {
+  auto aAccesses = accessesWithin(A);
   auto inputAccess = input(I);
 
+  DependencyKind kind = DependencyKind::NoDependency;
   for (auto& depPair : inputAccess->dependents()) {
-    if (aReads.count(depPair.second) != 0) {
-      return true;
+    auto it = aAccesses.find(depPair.second);
+    if (it != aAccesses.end()) {
+      kind = upgradeDependencyKind(kind, (*it)->isWrite(), true);
+
+      // if it's RAW, just return it it won't change.
+      if (kind == DependencyKind::ReadAfterWrite) {
+        return kind;
+      }
     }
   }
 
-  return false;
+  return kind;
 }
 
-bool MemDependencyChecker::dependsDirectly(const Expr* A, const Buf* I) {
-  auto aReads = getAllReadsWithin(A);
+DependencyKind MemDependencyChecker::dependsDirectly(
+    const Expr* A,
+    const Buf* I) {
+  auto aAccesses = accessesWithin(A);
   auto inputAccess = input(I);
 
+  DependencyKind kind = DependencyKind::NoDependency;
   for (auto& depPair : inputAccess->dependents()) {
-    if (aReads.count(depPair.second) != 0) {
-      return true;
+    auto it = aAccesses.find(depPair.second);
+    if (it != aAccesses.end()) {
+      kind = upgradeDependencyKind(kind, (*it)->isWrite(), true);
+
+      // if it's RAW, just return it it won't change.
+      if (kind == DependencyKind::ReadAfterWrite) {
+        return kind;
+      }
     }
   }
 
-  return false;
+  return kind;
 }
 
-bool MemDependencyChecker::dependsDirectly(
+DependencyKind MemDependencyChecker::dependsDirectly(
     const std::shared_ptr<AccessInfo>& A,
     const std::shared_ptr<AccessInfo>& B) {
-  return A->hasDependency(B) && B->isWrite();
+  DependencyKind kind = DependencyKind::NoDependency;
+  if (!A->hasDependency(B)) {
+    return kind;
+  }
+
+  return upgradeDependencyKind(kind, A->isWrite(), B->isWrite());
 }
 
-bool MemDependencyChecker::dependsIndirectly(const Expr* A, const Stmt* B) {
+DependencyKind MemDependencyChecker::dependsIndirectly(
+    const Expr* A,
+    const Stmt* B) {
   return dependsIndirectlyHelper(A, B);
 }
 
-bool MemDependencyChecker::dependsIndirectly(const Stmt* A, const Stmt* B) {
+DependencyKind MemDependencyChecker::dependsIndirectly(
+    const Stmt* A,
+    const Stmt* B) {
   return dependsIndirectlyHelper(A, B);
 }
 
-bool MemDependencyChecker::dependsIndirectly(const Buf* O, const Stmt* B) {
+DependencyKind MemDependencyChecker::dependsIndirectly(
+    const Buf* O,
+    const Stmt* B) {
   auto outputAccess = output(O);
 
   DependencySet dependencies;
   getDependencyChain(outputAccess, dependencies);
 
-  auto bWrites = getAllWritesWithin(B);
+  auto bAccesses = accessesWithin(B);
+
+  DependencyKind kind = DependencyKind::NoDependency;
+
   for (auto& dep : dependencies) {
-    if (bWrites.count(dep) != 0) {
-      return true;
+    auto it = bAccesses.find(dep);
+    if (it != bAccesses.end()) {
+      kind = upgradeDependencyKind(kind, false, (*it)->isWrite());
+
+      // if it's RAW, just return it it won't change.
+      if (kind == DependencyKind::ReadAfterWrite) {
+        return kind;
+      }
     }
   }
 
-  return false;
+  return kind;
 }
 
-bool MemDependencyChecker::dependsIndirectly(const Stmt* A, const Buf* I) {
-  auto aReads = getAllReadsWithin(A);
+DependencyKind MemDependencyChecker::dependsIndirectly(
+    const Stmt* A,
+    const Buf* I) {
+  auto aAccesses = accessesWithin(A);
   auto inputAccess = input(I);
 
-  auto aDeps = getAllWriteDependencies(aReads);
+  DependencyKind kind = DependencyKind::NoDependency;
 
-  return aDeps.count(inputAccess) != 0;
+  for (auto& aA : aAccesses) {
+    DependencySet aDependencies;
+    getDependencyChain(aA, aDependencies);
+    auto it = aDependencies.find(inputAccess);
+
+    if (it != aDependencies.end()) {
+      kind = upgradeDependencyKind(kind, aA->isWrite(), true);
+      // if it's RAW, just return it it won't change.
+      if (kind == DependencyKind::ReadAfterWrite) {
+        return kind;
+      }
+    }
+  }
+  return kind;
 }
 
-bool MemDependencyChecker::dependsIndirectly(const Expr* A, const Buf* I) {
-  auto aReads = getAllReadsWithin(A);
+DependencyKind MemDependencyChecker::dependsIndirectly(
+    const Expr* A,
+    const Buf* I) {
+  auto aAccesses = accessesWithin(A);
   auto inputAccess = input(I);
 
-  auto aDeps = getAllWriteDependencies(aReads);
+  DependencyKind kind = DependencyKind::NoDependency;
 
-  return aDeps.count(inputAccess) != 0;
+  for (auto& aA : aAccesses) {
+    DependencySet aDependencies;
+    getDependencyChain(aA, aDependencies);
+    auto it = aDependencies.find(inputAccess);
+
+    if (it != aDependencies.end()) {
+      kind = upgradeDependencyKind(kind, aA->isWrite(), true);
+      // if it's RAW, just return it it won't change.
+      if (kind == DependencyKind::ReadAfterWrite) {
+        return kind;
+      }
+    }
+  }
+  return kind;
 }
 
-bool MemDependencyChecker::dependsIndirectly(const Buf* O, const Buf* I) {
+DependencyKind MemDependencyChecker::dependsIndirectly(
+    const Buf* O,
+    const Buf* I) {
   auto outputAccess = output(O);
   auto inputAccess = input(I);
 
   return dependsIndirectly(outputAccess, inputAccess);
 }
 
-bool MemDependencyChecker::dependsIndirectly(
+DependencyKind MemDependencyChecker::dependsIndirectly(
     const std::shared_ptr<AccessInfo>& A,
     const std::shared_ptr<AccessInfo>& B) {
-  if (!B->isWrite()) {
-    return false;
-  }
+  DependencyKind kind = DependencyKind::NoDependency;
 
   DependencySet dependencies;
   getDependencyChain(A, dependencies);
-  if (dependencies.count(B) == 0) {
-    return false;
+
+  auto it = dependencies.find(B);
+  if (it == dependencies.end()) {
+    return kind;
   }
 
-  return true;
+  return upgradeDependencyKind(kind, A->isWrite(), (*it)->isWrite());
 }
 
 std::shared_ptr<AccessInfo> MemDependencyChecker::accessFor(
@@ -450,6 +516,27 @@ std::shared_ptr<AccessInfo> MemDependencyChecker::accessFor(
   }
 
   return nullptr;
+}
+
+std::unordered_set<std::shared_ptr<AccessInfo>> MemDependencyChecker::
+    accessesWithin(const Stmt* A) const {
+  auto it = scopeToAccesses_.find(A);
+  if (it != scopeToAccesses_.end()) {
+    return std::unordered_set<std::shared_ptr<AccessInfo>>(
+        it->second.begin(), it->second.end());
+  }
+
+  std::unordered_set<std::shared_ptr<AccessInfo>> ret;
+  auto bound = stmtToAccess_.equal_range(A);
+  for (auto it = bound.first; it != bound.second; ++it) {
+    ret.insert(it->second);
+  }
+  return ret;
+}
+
+std::unordered_set<std::shared_ptr<AccessInfo>> MemDependencyChecker::
+    accessesWithin(const Expr* A) const {
+  return {accessFor(A)};
 }
 
 std::shared_ptr<AccessInfo> MemDependencyChecker::input(const Buf* b) const {
@@ -503,8 +590,8 @@ void MemDependencyChecker::visit(const Store* v) {
 }
 
 void MemDependencyChecker::visit(const Load* v) {
-  // Create a temporary scope to hold any loads that occur within the indices of
-  // this load.
+  // Create a temporary scope to hold any loads that occur within the indices
+  // of this load.
   auto indicesScope =
       std::make_shared<Scope>(currentScope_->block, currentScope_);
   currentScope_ = indicesScope;
@@ -538,10 +625,9 @@ void MemDependencyChecker::visit(const Load* v) {
   stmtToAccess_.emplace(lastStmt_, load);
   exprToAccess_.emplace(v, load);
 
-  // This is a read, and does not close any accesses - but we need to establish
-  // dependencies on accesses in the same scope.
-  // Intentionally using operator[], we want it to be created if it does not
-  // exist.
+  // This is a read, and does not close any accesses - but we need to
+  // establish dependencies on accesses in the same scope. Intentionally using
+  // operator[], we want it to be created if it does not exist.
   auto& writeHistory = currentScope_->openWrites_[var];
   updateWriteHistory(writeHistory, load, load->id());
   currentScope_->accesses_.push_back(load);
@@ -633,10 +719,11 @@ void MemDependencyChecker::visit(const ReduceOp* v) {
   v->body().node()->accept(this);
 }
 
-// This check determines if two accesses within a loop are "safe" from loop-self
-// dependence. This function does not consider overlap in bound range, but
-// rather the stride of the bound relative to the loop variable. This is the
-// section of the code which considers iteration order, if allowed.
+// This check determines if two accesses within a loop are "safe" from
+// loop-self dependence. This function does not consider overlap in bound
+// range, but rather the stride of the bound relative to the loop variable.
+// This is the section of the code which considers iteration order, if
+// allowed.
 bool executionSafetyCheck(
     const std::shared_ptr<AccessInfo>& info,
     const std::shared_ptr<AccessInfo>& other,
@@ -664,8 +751,8 @@ bool executionSafetyCheck(
     const Expr* modCheck =
         IRSimplifier::simplify(new Mod(maxStride, minStride));
 
-    // if the strides can't have easily inferable distinct offsets, they're not
-    // safe.
+    // if the strides can't have easily inferable distinct offsets, they're
+    // not safe.
     if (!immediateEquals(modCheck, 0)) {
       continue;
     }
@@ -711,8 +798,8 @@ bool executionSafetyCheck(
     }
 
     // If we can consider execution order and the difference in offset is
-    // opposite signed to the stride then the read occurs in the past and we can
-    // infer safety.
+    // opposite signed to the stride then the read occurs in the past and we
+    // can infer safety.
     if (!parallelized && diffNegative == strideNegative &&
         immediateEquals(startDiff, 0)) {
       return true;
@@ -815,8 +902,8 @@ void MemDependencyChecker::visit(const For* v) {
           info->bounds()[i].swap();
         }
 
-        // If this access uses the loop var, it depends on loads used to compute
-        // the loop var.
+        // If this access uses the loop var, it depends on loads used to
+        // compute the loop var.
         for (auto& extentLoad : extentsScope->accesses_) {
           info->addDependency(extentLoad);
           extentLoad->addDependent(info);
@@ -825,8 +912,8 @@ void MemDependencyChecker::visit(const For* v) {
     }
   }
 
-  // Now we need to update the bounds in openWrites since that is what we use to
-  // merge.
+  // Now we need to update the bounds in openWrites since that is what we use
+  // to merge.
   for (auto& openWritePair : currentScope_->openWrites_) {
     for (auto& pair : openWritePair.second) {
       IndexBounds& bounds = pair.first;
@@ -924,9 +1011,23 @@ void MemDependencyChecker::visit(const For* v) {
     }
   }
 
+  std::vector<std::shared_ptr<AccessInfo>> mergedAccesses;
+  mergedAccesses.reserve(
+      extentsScope->accesses_.size() + currentScope_->accesses_.size());
+  std::copy(
+      extentsScope->accesses_.begin(),
+      extentsScope->accesses_.end(),
+      std::back_inserter(mergedAccesses));
+  std::copy(
+      currentScope_->accesses_.begin(),
+      currentScope_->accesses_.end(),
+      std::back_inserter(mergedAccesses));
+  scopeToAccesses_.emplace(v, mergedAccesses);
+
   // it's a little faster to merge without closing, and since no writes can
   // occur within the start and stop exprs we'll do that.
   mergeScope(extentsScope, extentsScope->parent, false);
+
   mergeScope(currentScope_, currentScope_->parent, true);
   currentScope_ = currentScope_->parent;
 }
@@ -935,13 +1036,15 @@ void MemDependencyChecker::visit(const Cond* v) {
   const Stmt* last = lastStmt_;
   lastStmt_ = v;
 
+  auto enclosingScope =
+      std::make_shared<Scope>(currentScope_->block, currentScope_);
+
   // condition is in enclosing scope.
   v->condition()->accept(this);
 
   Block* true_stmt = v->true_stmt();
   Block* false_stmt = v->false_stmt();
 
-  auto enclosingScope = currentScope_;
   // Create scopes so the Block visitor doesn't create and merge a new scope.
   auto trueScope = std::make_shared<Scope>(true_stmt, enclosingScope);
   auto falseScope = std::make_shared<Scope>(false_stmt, enclosingScope);
@@ -967,8 +1070,12 @@ void MemDependencyChecker::visit(const Cond* v) {
   // accesses.
   mergeScope(trueScope, enclosingScope, false);
   mergeScope(falseScope, enclosingScope, false);
+  // Merge the enclosing scope into it's parent.
+  mergeScope(enclosingScope, enclosingScope->parent, false);
 
-  currentScope_ = enclosingScope;
+  scopeToAccesses_.emplace(v, enclosingScope->accesses_);
+
+  currentScope_ = enclosingScope->parent;
   lastStmt_ = last;
 }
 
@@ -1090,6 +1197,8 @@ void MemDependencyChecker::visit(const Block* v) {
   for (auto& pair : currentScope_->shadowedVarBounds) {
     knownVarBounds_[pair.first] = pair.second;
   }
+
+  scopeToAccesses_.emplace(v, currentScope_->accesses_);
 
   if (currentScope_ != prev_scope) {
     mergeScope(currentScope_, prev_scope, true);
